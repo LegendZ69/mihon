@@ -60,6 +60,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
     private boolean framePlan;
     private boolean qualityPlan;
     private boolean lifecyclePlan;
+    private int lifecyclePid;
     private String lifecycleBaselineHash;
     private final JSONArray lifecycleSamples = new JSONArray();
     private String initialFrameMode;
@@ -608,6 +609,8 @@ public final class ReaderUiInstrumentation extends Instrumentation {
         String rawPid = lifecycleShell("pidof " + SUBJECT).trim();
         require(rawPid.matches("[1-9][0-9]*"), "A unique subject PID is required for lifecycle attribution");
         int pid = Integer.parseInt(rawPid);
+        if (phase.equals("initial")) lifecyclePid = pid;
+        require(pid == lifecyclePid, "Subject process changed during a lifecycle endpoint");
         JSONObject sample = new JSONObject().put("phase", phase).put("cycle", cycle)
             .put("elapsed_ns", SystemClock.elapsedRealtimeNanos()).put("pid", pid).put("activity", activity);
         try {
