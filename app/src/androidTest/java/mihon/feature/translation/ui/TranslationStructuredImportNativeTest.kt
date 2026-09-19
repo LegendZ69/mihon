@@ -209,7 +209,16 @@ class TranslationStructuredImportNativeTest {
                 )
                 click("Settings")
                 setEditable("Search settings", "Translation work")
+                val settingsWindowId = instrumentation.uiAutomation.rootInActiveWindow?.windowId
                 click("Translation work · swipe start")
+                await("Gesture dialog owns a focused accessibility window") {
+                    val root = instrumentation.uiAutomation.rootInActiveWindow
+                    root?.windowId != settingsWindowId && root?.window?.isFocused == true &&
+                        text(
+                            "Start and end mirror with the app language. " +
+                                "Swipe actions are disabled during selection.",
+                        )
+                }
                 click("Related logs")
                 await("Gesture choice saves to the native app graph preference store") {
                     start.get() == TranslationGestureAction.LOGS
@@ -307,7 +316,31 @@ class TranslationStructuredImportNativeTest {
     }
     private fun click(label: String) {
         reveal(label) { actions(label).isNotEmpty() }
-        assertTrue(actions(label).first().performAction(AccessibilityNodeInfo.ACTION_CLICK))
+        val deadline = SystemClock.uptimeMillis() + 5_000
+        var attempts = 0
+        var observation = "No actionable node"
+        do {
+            instrumentation.waitForIdleSync()
+            // Dialog semantics can be published before their window owns focus. Reacquire after
+            // a rejected action; never repeat an accepted click that may already have changed UI.
+            val node = actions(label).firstOrNull()
+            if (node != null) {
+                val fresh = node.refresh()
+                val focused = node.window?.isFocused == true
+                val bounds = Rect().also(node::getBoundsInScreen)
+                observation = "window=${node.windowId} fresh=$fresh focused=$focused bounds=$bounds " +
+                    "visible=${node.isVisibleToUser} enabled=${node.isEnabled} clickable=${node.isClickable}"
+                if (fresh && focused && node.isVisibleToUser && node.isEnabled && node.isClickable &&
+                    labelled(node, label) &&
+                    node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+                ) {
+                    attempts++
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
+                }
+            }
+            SystemClock.sleep(40)
+        } while (SystemClock.uptimeMillis() < deadline)
+        assertTrue("Click '$label' rejected after $attempts attempts within five seconds: $observation", false)
     }
 
     /** Scroll only the focused app's observed vertical surface, with a fixed bound on attempts. */
