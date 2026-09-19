@@ -1,9 +1,14 @@
 package mihon.feature.translation.ui
 
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.SingleIn
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.core.common.preference.getEnum
 
 /** UI gestures are application preferences, never immutable paid-work settings. */
+@Inject
+@SingleIn(AppScope::class)
 class TranslationGesturePreferences(private val store: PreferenceStore) {
     fun assignment(row: TranslationGestureRow, direction: TranslationGestureDirection) = store.getEnum(
         "translator_gesture_${row.name.lowercase()}_${direction.name.lowercase()}",

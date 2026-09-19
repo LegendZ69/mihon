@@ -94,6 +94,7 @@ interface AppGraph : ViewModelGraph {
     val downloadPreferences: DownloadPreferences
 
     val translationPreferences: mihon.feature.translation.TranslationPreferences
+    val translationGesturePreferences: mihon.feature.translation.ui.TranslationGesturePreferences
     val translationManager: mihon.feature.translation.TranslationManager
     val translationDashboardRepository: tachiyomi.domain.translation.service.TranslationDashboardRepository
     val translationAccountingManager: mihon.feature.translation.accounting.TranslationAccountingManager

@@ -160,6 +160,88 @@ class TranslationStructuredImportNativeTest {
 
     private fun editors(label: String) = nodes().filter { it.isVisibleToUser && it.isEditable && labelled(it, label) }
 
+    @Test
+    fun populatedQueueAndGestureSettingsUseAppGraphAndPreserveWork() = runBlocking {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("translation.acceptance") == "true")
+        val graph = context.appGraph
+        val repository = graph.translationRepository
+        val before = repository.jobs()
+        val runnableStates = mihon.feature.translation.TranslationManager.activeStates + setOf(
+            tachiyomi.domain.translation.model.TranslationJobState.QUEUED,
+            tachiyomi.domain.translation.model.TranslationJobState.WAITING,
+        )
+        assumeTrue(before.none { it.state in runnableStates })
+        val start = graph.translationGesturePreferences.assignment(
+            TranslationGestureRow.WORK,
+            TranslationGestureDirection.START,
+        )
+        val end = graph.translationGesturePreferences.assignment(
+            TranslationGestureRow.WORK,
+            TranslationGestureDirection.END,
+        )
+        val preserved = listOf(start, end).map { Triple(it, it.isSet(), it.get()) }
+        val scopeId = 8_100_000_000_000_000L + (SystemClock.elapsedRealtimeNanos() % 1_000_000_000L)
+        val fixture = tachiyomi.domain.translation.model.TranslationJob(
+            id = "native-gesture-graph-${UUID.randomUUID()}",
+            mangaId = scopeId,
+            chapterId = scopeId,
+            mangaTitle = "Owned gesture graph fixture",
+            chapterTitle = "Owned gesture graph chapter",
+            settings = tachiyomi.domain.translation.model.TranslationSettings(
+                mode = tachiyomi.domain.translation.model.TranslationMode.STRUCTURED_FILES,
+            ),
+            state = tachiyomi.domain.translation.model.TranslationJobState.PAUSED,
+            imageCount = 2,
+            message = "Disposable native UI fixture; no credentials or provider work",
+        )
+        try {
+            start.set(TranslationGestureAction.STATE_ACTION)
+            end.set(TranslationGestureAction.DISABLED)
+            repository.saveJob(fixture)
+            withActivity(TranslationActivity.intent(context)) {
+                await("Populated queue renders the real configured swipe row") { text(fixture.chapterTitle) }
+                assertTrue(
+                    "Queue row exposes the current state action",
+                    nodes().any { node ->
+                        node.isLongClickable && labelled(node, fixture.chapterTitle) &&
+                            node.actionList.isNotEmpty()
+                    },
+                )
+                click("Settings")
+                setEditable("Search settings", "Translation work")
+                click("Translation work · swipe start")
+                click("Related logs")
+                await("Gesture choice saves to the native app graph preference store") {
+                    start.get() == TranslationGestureAction.LOGS
+                }
+                click("Queue")
+                await("Queue reflects the saved gesture through its accessible action") {
+                    nodes().any { node ->
+                        node.isLongClickable && labelled(node, fixture.chapterTitle) &&
+                            node.actionList.any { it.label?.toString() == "Related logs" }
+                    }
+                }
+                assertEquals(fixture, repository.jobs().single { it.id == fixture.id })
+                assertEquals(before, repository.jobs().filterNot { it.id == fixture.id })
+                assertTrue(repository.batches(fixture.id).isEmpty())
+                assertTrue(repository.results(fixture.id).isEmpty())
+                assertTrue(repository.operationPage(jobId = fixture.id).isEmpty())
+                assertTrue(repository.usagePage(0, Long.MAX_VALUE, jobId = fixture.id).isEmpty())
+                report(
+                    "gesture-graph-passed",
+                    "Populated queue and global gesture preferences opened; saved action reflected in queue; " +
+                        "paused file-import fixture remained unchanged without provider work",
+                )
+            }
+        } finally {
+            preserved.forEach { (preference, wasSet, value) ->
+                if (wasSet) preference.set(value) else preference.delete()
+            }
+            repository.removeJob(fixture.id)
+            assertEquals(before, repository.jobs())
+        }
+    }
+
     private fun setEditable(label: String, value: String) {
         reveal(label) { editors(label).isNotEmpty() }
         val editor = editors(label).single()

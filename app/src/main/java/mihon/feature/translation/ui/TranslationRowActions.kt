@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
@@ -37,6 +38,7 @@ import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.DropdownMenu
 import me.saket.swipe.SwipeAction
 import me.saket.swipe.SwipeableActionsBox
+import mihon.app.di.appGraph
 import mihon.icons.materialsymbols.MaterialSymbols
 import mihon.icons.materialsymbols.rounded.Cancel
 import mihon.icons.materialsymbols.rounded.Done
@@ -47,10 +49,7 @@ import mihon.icons.materialsymbols.rounded.Refresh
 import mihon.icons.materialsymbols.rounded.Schedule
 import mihon.icons.materialsymbols.rounded.Warning
 import mihon.icons.materialsymbols.roundedfilled.PlayArrow
-import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.presentation.core.util.selectedBackground
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 
 class TranslationRowAction(
     val label: String,
@@ -180,8 +179,9 @@ fun configuredTranslationSwipe(
     direction: TranslationGestureDirection,
     actions: Map<TranslationGestureAction, TranslationRowAction>,
 ): TranslationRowAction? {
-    val preferences = remember { TranslationGesturePreferences(Injekt.get<PreferenceStore>()) }
-    val preference = remember(row, direction) { preferences.assignment(row, direction) }
+    val context = LocalContext.current
+    val preferences = remember(context) { context.appGraph.translationGesturePreferences }
+    val preference = remember(preferences, row, direction) { preferences.assignment(row, direction) }
     val assignment by preference.changes().collectAsState(preference.get())
     return actions[assignment.takeIf { it in row.allowed } ?: row.default(direction)]
 }

@@ -10,22 +10,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import eu.kanade.presentation.more.settings.widget.TextPreferenceWidget
-import tachiyomi.core.common.preference.PreferenceStore
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
+import mihon.app.di.appGraph
 
 /** Global only: settings change UI behavior without modifying saved jobs or submitting work. */
 @Composable
 fun TranslationGestureSettings(query: String = "") {
-    val preferences = remember { TranslationGesturePreferences(Injekt.get<PreferenceStore>()) }
+    val context = LocalContext.current
+    val preferences = remember(context) { context.appGraph.translationGesturePreferences }
     TranslationGestureRow.entries.forEach { row ->
         TranslationGestureDirection.entries.forEach { direction ->
             val title = "${row.label} · swipe ${direction.label.lowercase()}"
             if (query.isBlank() ||
                 ("$title gesture action " + row.allowed.joinToString { it.label }).contains(query, true)
             ) {
-                val preference = remember(row, direction) { preferences.assignment(row, direction) }
+                val preference = remember(preferences, row, direction) { preferences.assignment(row, direction) }
                 val current by preference.changes().collectAsState(preference.get())
                 var choosing by remember { mutableStateOf(false) }
                 var error by remember { mutableStateOf<String?>(null) }
