@@ -242,9 +242,9 @@ class QualityReviewCoordinator(
                         else -> QualityReviewState.PASSED
                     },
                     message = if (visual) {
-                        "AI assessment; human meaning approval pending"
+                        "AI assessment; review meaning and visual output"
                     } else {
-                        "Text-only AI assessment; visual review and human meaning approval pending"
+                        "Text-only AI assessment; review meaning and visual output"
                     },
                 )
                 val committed = repository.completeReview(outcome, candidate.takeIf { changed })

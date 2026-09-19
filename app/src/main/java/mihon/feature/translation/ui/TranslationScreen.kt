@@ -575,7 +575,7 @@ private fun TranslationQueueContent(
                                     Text(
                                         "AI review: ${reviewSummary.ifBlank {
                                             "not reviewed"
-                                        }} · Human review pending",
+                                        }} · Check meaning and visual output",
                                         style = MaterialTheme.typography.bodySmall,
                                     )
                                 }

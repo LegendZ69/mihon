@@ -42,7 +42,13 @@ fun NewUpdateScreen(
 ) {
     InfoScreen(
         icon = MaterialSymbols.Rounded.NewReleases,
-        headingText = stringResource(MR.strings.update_check_notification_update_available),
+        headingText = stringResource(
+            if (stage == NewUpdateScreenModel.Stage.Installed) {
+                MR.strings.ext_installed
+            } else {
+                MR.strings.update_check_notification_update_available
+            },
+        ),
         subtitleText = versionName,
         acceptText = when (stage) {
             NewUpdateScreenModel.Stage.Available -> stringResource(MR.strings.update_check_confirm)
@@ -56,16 +62,24 @@ fun NewUpdateScreen(
                 if (installPermissionRequired) MR.strings.update_install_permission else MR.strings.action_install,
             )
             NewUpdateScreenModel.Stage.Failed -> stringResource(MR.strings.action_retry)
+            NewUpdateScreenModel.Stage.Installed -> stringResource(MR.strings.action_close)
         },
-        onAcceptClick = onAcceptUpdate,
+        onAcceptClick = if (stage == NewUpdateScreenModel.Stage.Installed) onRejectUpdate else onAcceptUpdate,
         canAccept =
         stage in
             setOf(
                 NewUpdateScreenModel.Stage.Available,
                 NewUpdateScreenModel.Stage.Failed,
                 NewUpdateScreenModel.Stage.Downloaded,
+                NewUpdateScreenModel.Stage.Installed,
             ),
-        rejectText = stringResource(MR.strings.action_not_now),
+        rejectText = if (stage ==
+            NewUpdateScreenModel.Stage.Installed
+        ) {
+            null
+        } else {
+            stringResource(MR.strings.action_not_now)
+        },
         onRejectClick = onRejectUpdate,
     ) {
         Column(

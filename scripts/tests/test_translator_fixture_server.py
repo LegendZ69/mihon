@@ -1,6 +1,7 @@
 """Host-only protocol/recovery/privacy checks. No devices or external requests."""
 
 import base64
+import copy
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
@@ -102,6 +103,35 @@ class ServerTests(unittest.TestCase):
         self.server.server_close()
         self.ledger.close()
         self.temp.cleanup()
+
+    def test_opt_in_bound_corrections_use_app_review_protocol_and_reject_stale_or_generation(self):
+        body, baseline = review_body()
+        proposed = copy.deepcopy(baseline["regions"])
+        proposed[0]["translatedText"] = "Authored synthetic correction"
+        self.state.review_corrections = {"schema_version": 1, "kind": "bound-agent-reviewed-corrections",
+            "pages": [{"image_id": "page-0", "image_hash": baseline["imageHash"],
+                       "width": 720, "height": 1280, "source_revision": 12,
+                       "baseline_regions": copy.deepcopy(baseline["regions"]),
+                       "proposed_regions": proposed, "changed_ids": ["original-id"],
+                       "detected_language": "ja"}]}
+        status, _, response = self.post(body)
+        self.assertEqual(status, 200, response)
+        self.assertEqual(page_content(json.loads(response), "chat")[0]["regions"], proposed)
+        self.assertIn('"visualComplete":true', json.loads(response)["choices"][0]["message"]["content"])
+        # Existing app review source-revision guards must be exercised, never bypassed.
+        baseline["sourceRevision"] += 1
+        prompt = body["messages"][0]["content"][-1]
+        prefix, _, _ = prompt["text"].rpartition(fixture.REVIEW_MARKER)
+        prompt["text"] = prefix + fixture.REVIEW_MARKER + json.dumps(baseline)
+        status, _, response = self.post(body)
+        self.assertEqual(status, 409)
+        self.assertIn(b"bound_correction_precondition_failed", response)
+        status, _, response = self.post(request_body())
+        self.assertEqual(status, 400)
+        self.assertIn(b"bound_corrections_require_review", response)
+        ledger = self.ledger_path.read_text()
+        for private in ("private-source", "private-translation", "Authored synthetic correction"):
+            self.assertNotIn(private, ledger)
 
     def test_rendered_review_has_two_image_inputs_but_one_target_and_response_page(self):
         for dialect in ("chat", "responses"):

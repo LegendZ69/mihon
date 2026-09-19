@@ -7,7 +7,7 @@
       "location": "global",
       "capacity": "shared",
       "currency": "USD",
-      "verified_on": "2026-09-11",
+      "verified_on": "2026-09-19",
       "source_url": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
       "input_per_million_usd": "1.50",
       "output_per_million_usd": "7.50",
@@ -17,12 +17,12 @@
     }
   },
   "fx": {
-    "sgd_per_usd": "1.267857142858",
-    "observed_on": "2026-09-11",
-    "verified_on": "2026-09-11",
+    "sgd_per_usd": "1.278446771379",
+    "observed_on": "2026-09-18",
+    "verified_on": "2026-09-19",
     "source_url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
-    "usd_per_eur": "1.1592",
-    "sgd_per_eur": "1.4697",
+    "usd_per_eur": "1.1460",
+    "sgd_per_eur": "1.4651",
     "basis": "ECB reference cross-rate, SGD per EUR divided by USD per EUR, rounded upward to 12 decimal places. A reference estimate, not the account's Cloud SGD SKU price or settlement rate."
   }
 }

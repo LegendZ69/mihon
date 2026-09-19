@@ -13,15 +13,23 @@ final class FrameAnchorPolicy {
         }
     }
     final int requestedPixels;
-    private FrameAnchorPolicy(int pixels) { requestedPixels = pixels; }
+    final boolean primed;
+    private FrameAnchorPolicy(int pixels, boolean primed) { requestedPixels = pixels; this.primed = primed; }
     boolean enabled() { return requestedPixels != 0; }
     static FrameAnchorPolicy parse(String plan, String backend, String raw) {
-        if (raw == null || raw.equals("0")) return new FrameAnchorPolicy(0);
+        return parse(plan, backend, raw, false);
+    }
+    static FrameAnchorPolicy parse(String plan, String backend, String raw, boolean primed) {
+        if (raw == null || raw.equals("0")) {
+            if (primed) throw new IllegalArgumentException("Priming requires the explicit 100-pixel anchor");
+            return new FrameAnchorPolicy(0, false);
+        }
         if (!raw.equals("100") || !plan.equals("framePairs") || !"webgpu".equals(backend)) {
             throw new IllegalArgumentException("Interior anchor requires framePairs, webgpu and explicit frameAnchorPixels=100");
         }
-        return new FrameAnchorPolicy(100);
+        return new FrameAnchorPolicy(100, primed);
     }
+    String protocol() { return primed ? "slop_primed_interior_drag_v2" : "fixed_interior_drag_v1"; }
     void requireTarget(String chapter, int page) {
         if (enabled() && (!"002 - Twelve-page corpus".equals(chapter) || page != 7)) {
             throw new IllegalArgumentException("Interior anchor is restricted to controlled chapter002, reader page7");

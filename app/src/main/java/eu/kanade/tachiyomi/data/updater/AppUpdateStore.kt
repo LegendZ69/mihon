@@ -77,7 +77,7 @@ internal class AppUpdateStore(
     }
 
     fun apk(id: String) = File(directory, "apks/${UUID.fromString(id)}.apk")
-    fun partial(id: String) = File(directory, "apks/${UUID.fromString(id)}.part")
+    fun partial(id: String) = File(directory, "staging/${UUID.fromString(id)}.part")
 
     fun removeFiles(id: String) {
         apk(id).delete()
@@ -85,8 +85,10 @@ internal class AppUpdateStore(
     }
 
     fun removeOtherFiles(keepId: String?) {
-        val retained = keepId?.let { setOf(apk(it).name, partial(it).name) }.orEmpty()
-        File(directory, "apks").listFiles()?.filter { it.name !in retained }?.forEach { it.delete() }
+        val retained = keepId?.let { setOf(apk(it), partial(it)) }.orEmpty()
+        listOf("apks", "staging").forEach { child ->
+            File(directory, child).listFiles()?.filter { it !in retained }?.forEach { it.delete() }
+        }
     }
 }
 

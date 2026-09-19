@@ -17,25 +17,29 @@ def require(condition, message):
 
 CANONICAL_POLICY = "adjacent_cached_page_then_selected_page"
 INTERIOR_POLICY = "adjacent_cached_page_then_fixed_interior_drag_v1"
+PRIMED_POLICY = "adjacent_cached_page_then_slop_primed_interior_drag_v2"
 INTERIOR_TARGET = "repeatable_interior_anchor"
 INTERIOR_DESCRIPTOR = {"protocol": "fixed_interior_drag_v1", "requested_drag_pixels": 100,
                        "direction": "up", "motion_ms": 420, "release_hold_ms": 300, "expected_page": 7}
+PRIMED_DESCRIPTOR = dict(INTERIOR_DESCRIPTOR, protocol="slop_primed_interior_drag_v2",
+                         prime_pixels=96, prime_move_ms=16, prime_hold_ms=120)
 LEGACY_POLICY = "legacy_natural_gesture_return"
 CANONICAL_REPORT_FIELDS = {"restoration_target", "canonical_setup_verified", "canonical_baseline_sha256", "entry_viewport_sha256", "frame_anchor"}
 CANONICAL_WINDOW_FIELDS = {"natural_after_viewport_sha256", "natural_after_elapsed_ns", "reset_after_start_elapsed_ns",
                            "reset_after_end_elapsed_ns", "canonical_reset_verified", "frame_anchor"}
 
 
-def anchor_descriptor(pixels, backend):
+def anchor_descriptor(pixels, backend, primed=False):
     require(type(pixels) is int and pixels in (0, 100), "Only explicit 0 or 100 anchor pixels are supported")
     if pixels == 0:
+        require(not primed, "Priming requires the explicit 100-pixel anchor")
         return None
     require(backend == "webgpu", "Interior anchor is restricted to WebGPU")
-    return dict(INTERIOR_DESCRIPTOR)
+    return dict(PRIMED_DESCRIPTOR if primed else INTERIOR_DESCRIPTOR)
 
 
-def validate_anchor(observed, pixels, backend):
-    expected = anchor_descriptor(pixels, backend)
+def validate_anchor(observed, pixels, backend, primed=False):
+    expected = anchor_descriptor(pixels, backend, primed)
     require(observed == expected, "Window anchor differs from the declared capture protocol")
     return expected
 
@@ -51,9 +55,9 @@ def viewport_policy(report):
                 not any(any(field in row for field in CANONICAL_WINDOW_FIELDS) for row in report.get("frame_windows", [])),
                 "Canonical normalization metadata has no explicit policy")
         return LEGACY_POLICY
-    require(policy in (CANONICAL_POLICY, INTERIOR_POLICY), "Unsupported viewport reset policy")
-    interior = policy == INTERIOR_POLICY
-    validate_anchor(report.get("frame_anchor"), 100 if interior else 0, report.get("backend"))
+    require(policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY), "Unsupported viewport reset policy")
+    interior = policy in (INTERIOR_POLICY, PRIMED_POLICY)
+    validate_anchor(report.get("frame_anchor"), 100 if interior else 0, report.get("backend"), policy == PRIMED_POLICY)
     if interior:
         require(report.get("initial_chapter") == "002 - Twelve-page corpus" and report.get("initial_page") == 7,
                 "Interior anchor changed its controlled chapter or page")
@@ -94,17 +98,17 @@ def validate_report(report):
         require((window.get("ordinal"), window.get("pair"), window.get("mode")) == (ordinal, pair, mode), "Pair order changed")
         require(window.get("status") == "boundary_assertions_passed", "Window boundary assertions failed")
         require(window.get("chapter") == report.get("initial_chapter") and window.get("page") == report.get("initial_page"), "Window changed page")
-        if policy in (CANONICAL_POLICY, INTERIOR_POLICY):
+        if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
             require(type(window.get("page")) is int, "Window page is not a normalized integer identity")
         require(window.get("backend") == report["backend"], "Window changed backend")
-        validate_anchor(window.get("frame_anchor"), 100 if policy == INTERIOR_POLICY else 0, report["backend"])
+        validate_anchor(window.get("frame_anchor"), 100 if policy in (INTERIOR_POLICY, PRIMED_POLICY) else 0, report["backend"], policy == PRIMED_POLICY)
         require((window.get("duration_ms"), window.get("cadence_ms"), window.get("gesture_duration_ms"), window.get("distance_px")) == (30000, 1000, 500, 500), "Gesture protocol changed")
         start, end = window["start_elapsed_ns"], window["end_elapsed_ns"]
         require(30_000_000_000 <= end - start < 30_250_000_000, "Incomplete or overlong input window")
         require(previous_end is None or start > previous_end, "Windows overlap or run backwards")
         previous_end = end
         normalization = {}
-        if policy in (CANONICAL_POLICY, INTERIOR_POLICY):
+        if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
             natural = window.get("natural_after_elapsed_ns")
             reset_start, reset_end = window.get("reset_after_start_elapsed_ns"), window.get("reset_after_end_elapsed_ns")
             require(window.get("canonical_reset_verified") is True, "Canonical post-window reset was not verified")
@@ -137,7 +141,7 @@ def validate_report(report):
                        "max_gesture_start_lateness_ms": max(g["start_lateness_ms"] for g in gestures),
                        "viewport_reset_policy": policy, **normalization})
     require(hashes.get("original") != hashes.get("translated"), "Original/translated pixel states did not differ")
-    if policy in (CANONICAL_POLICY, INTERIOR_POLICY):
+    if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
         require(hashes.get(report["initial_mode"]) == report["canonical_baseline_sha256"],
                 "Starting comparison mode differs from the verified canonical baseline")
     return output
@@ -151,7 +155,7 @@ def verify_screenshots(report, directory):
     rotation = None
     for action in report.get("actions", []):
         details = action.get("details", {})
-        if policy in (CANONICAL_POLICY, INTERIOR_POLICY) and "viewport_pixel_sha256" in details:
+        if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY) and "viewport_pixel_sha256" in details:
             require(valid_hash(details["viewport_pixel_sha256"]), "Invalid observed viewport hash")
             require(action["action"] not in hash_observations, "Duplicate viewport observation")
             hash_observations[action["action"]] = details["viewport_pixel_sha256"]
@@ -172,20 +176,20 @@ def verify_screenshots(report, directory):
         digest = hashlib.sha256(argb).hexdigest()
         require(digest == details["viewport_pixel_sha256"], "Screenshot pixels disagree with report")
         require(details["chapter"] == report["initial_chapter"] and details["page"] == report["initial_page"], "Screenshot changed page")
-        if policy in (CANONICAL_POLICY, INTERIOR_POLICY):
+        if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
             require(type(details.get("page")) is int, "Screenshot page is not a normalized integer identity")
         if rotation is None:
             rotation = details["rotation"]
         require(details["rotation"] == rotation, "Screenshot changed orientation")
         require(action["action"] not in screenshots, "Duplicate screenshot action")
         screenshots[action["action"]] = digest
-    require(len(screenshots) == 2 + 2 * len(report["frame_windows"]) + (2 if policy == INTERIOR_POLICY else 0), "Missing or extra screenshots")
-    if policy == INTERIOR_POLICY:
+    require(len(screenshots) == 2 + 2 * len(report["frame_windows"]) + (2 if policy in (INTERIOR_POLICY, PRIMED_POLICY) else 0), "Missing or extra screenshots")
+    if policy in (INTERIOR_POLICY, PRIMED_POLICY):
         require(screenshots.get("anchor_setup_first_interior") == report["canonical_baseline_sha256"] and
                 screenshots.get("anchor_setup_first_page_start") != report["canonical_baseline_sha256"],
                 "Interior anchor lacks changed source pixels or its pinned starting image")
     require(screenshots.get("initial") == screenshots.get("frame_finally_restored"), "Initial pixels not restored")
-    if policy in (CANONICAL_POLICY, INTERIOR_POLICY):
+    if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
         require(screenshots.get("initial") == report["canonical_baseline_sha256"],
                 "Initial/final PNGs differ from the canonical baseline")
         require(hash_observations.get("frame_entry_before_canonical_setup") == report["entry_viewport_sha256"] and
@@ -195,7 +199,7 @@ def verify_screenshots(report, directory):
         label = f'frame_{window["ordinal"]}_{window["mode"]}'
         require(screenshots.get(label + "_before") == window["before_viewport_sha256"], "Missing before screenshot")
         require(screenshots.get(label + "_after") == window["after_viewport_sha256"], "Missing after screenshot")
-        if policy in (CANONICAL_POLICY, INTERIOR_POLICY):
+        if policy in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
             require(hash_observations.get(label + "_natural_after") == window["natural_after_viewport_sha256"],
                     "Natural-after window hash differs from its observed checkpoint")
     return len(screenshots)
@@ -216,10 +220,10 @@ def main():
                          "Initial overlay mode is host-attested, then tracked by toggle parity.",
                          "Bind each window to its actual trace clock and filter FrameTimeline rows to that interval.",
                          "Only chapter/page boundaries are observed; hidden intermediate positions are unavailable."]}
-    if viewport_policy(report) in (CANONICAL_POLICY, INTERIOR_POLICY):
+    if viewport_policy(report) in (CANONICAL_POLICY, INTERIOR_POLICY, PRIMED_POLICY):
         result.update(restoration_target=report["restoration_target"], canonical_baseline_sha256=report["canonical_baseline_sha256"],
                       entry_viewport_sha256=report["entry_viewport_sha256"])
-        if viewport_policy(report) == INTERIOR_POLICY:
+        if viewport_policy(report) in (INTERIOR_POLICY, PRIMED_POLICY):
             result["frame_anchor"] = report["frame_anchor"]
         result["limits"].append("Reset navigation occurs outside timed windows. Natural-after pixels are hash-only evidence; arbitrary entry-offset restoration is not claimed.")
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -121,6 +121,26 @@ class AppUpdateStoreTest {
     }
 
     @Test
+    fun `stale active reconciliation cannot overwrite or rewrite a completed record`() {
+        val store = AppUpdateStore(directory, persistence)
+        store.save(download.copy(stage = AppUpdateStage.DOWNLOADING))
+        val beforeWorkInfoLookup = store.state.value!!
+        assertTrue(store.update(download.id, onlyWhileActive = true) { it.copy(stage = AppUpdateStage.DOWNLOADED) })
+        val committed = persistence.bytes?.copyOf()
+
+        // A WorkInfo lookup can finish after the worker commits readiness. The same guard also
+        // prevents the collector from rewriting unchanged terminal metadata when storage is full.
+        persistence.failWrites = true
+        assertFalse(
+            store.update(beforeWorkInfoLookup.id, onlyWhileActive = true) {
+                it.copy(stage = AppUpdateStage.FAILED, error = "Download interrupted")
+            },
+        )
+        assertEquals(AppUpdateStage.DOWNLOADED, store.state.value?.stage)
+        assertArrayEquals(committed, persistence.bytes)
+    }
+
+    @Test
     fun `corrupt or unsafe persisted identities are ignored without modifying evidence`() {
         for (bytes in listOf(
             "interrupted JSON".encodeToByteArray(),

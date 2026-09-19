@@ -234,7 +234,7 @@ class ControllerTests(unittest.TestCase):
         os.umask(self.mask)
         self.temp.cleanup()
 
-    def run_controller(self, fake, anchor_pixels=0):
+    def run_controller(self, fake, anchor_pixels=0, primed=False):
         args = ["--serial", "explicit-device", "--adb", "fake-adb", "--output", str(self.root),
                 "--backend", fake.report["backend"], "--pairs", str(fake.report["frame_pairs_requested"]),
                 "--initial-mode", "translated", "--subject-apk-sha256", "a" * 64,
@@ -242,6 +242,8 @@ class ControllerTests(unittest.TestCase):
                 "--chapters-ahead-zero", "--cached-translation-visible"]
         if anchor_pixels:
             args += ["--frame-anchor-pixels", str(anchor_pixels)]
+        if primed:
+            args += ["--prime-frame-anchor"]
         with patch.object(controller.subprocess, "Popen", side_effect=fake.popen), \
                 patch.object(controller.subprocess, "run", side_effect=fake.run), \
                 patch.object(controller.time, "monotonic", side_effect=lambda: fake.clock), \
@@ -260,6 +262,22 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(manifest["frame_anchor"], controller.reconcile.INTERIOR_DESCRIPTOR)
         self.assertIn("frameAnchorPixels", manifest["instrumentation_command"])
+        self.assertEqual(manifest["screenshots_pulled"], 8)
+
+    def test_primed_anchor_descriptor_reaches_instrumentation_and_capture(self):
+        report = fixtures.PairedWindowsTests().interior_report()
+        report.update(viewport_reset_policy=controller.reconcile.PRIMED_POLICY,
+                      frame_anchor=controller.reconcile.anchor_descriptor(100, "webgpu", True))
+        report["actions"] = [{"details": {"screenshot": f"{i:02d}-frame_test.png"}} for i in range(8)]
+        for window in report["frame_windows"]:
+            ordinal = window["ordinal"]
+            window["frame_anchor"] = controller.reconcile.anchor_descriptor(100, "webgpu", True)
+            window["gate_file"] = f"/data/user/0/{controller.HARNESS}/files/reader-validation/{RUN}/frame-{ordinal}.go"
+            window["gate_nonce"] = f"20000000-0000-0000-0000-{ordinal:012d}"
+        code, manifest = self.run_controller(FakeDevice(report), 100, primed=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(manifest["frame_anchor"], controller.reconcile.PRIMED_DESCRIPTOR)
+        self.assertIn("frameAnchorPrimed", manifest["instrumentation_command"])
         self.assertEqual(manifest["screenshots_pulled"], 8)
 
     def test_interior_ready_cannot_arm_page_start_capture(self):

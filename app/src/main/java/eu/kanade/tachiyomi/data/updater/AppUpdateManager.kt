@@ -57,15 +57,11 @@ class AppUpdateManager(private val context: Context, private val network: Networ
                 val current = state.value ?: return@collect
                 val job = jobs.firstOrNull { it.id.toString() == current.id } ?: return@collect
                 if (job.state.isFinished && current.stage in activeStages) {
-                    store.update(current.id) {
-                        if (it.stage in activeStages) {
-                            it.copy(
-                                stage = AppUpdateStage.FAILED,
-                                error = "Download stopped. Tap Retry to download again.",
-                            )
-                        } else {
-                            it
-                        }
+                    store.update(current.id, onlyWhileActive = true) {
+                        it.copy(
+                            stage = AppUpdateStage.FAILED,
+                            error = "Download stopped. Tap Retry to download again.",
+                        )
                     }
                     store.partial(current.id).delete()
                 } else if (job.state == WorkInfo.State.ENQUEUED && current.stage in activeStages) {
@@ -81,6 +77,7 @@ class AppUpdateManager(private val context: Context, private val network: Networ
             if (BuildConfig.TRANSLATOR_RELEASE_NUMBER > 0) {
                 requireNotNull(release.apk) { "The translator release is missing verification information" }
             }
+            require(!isInstalled(release)) { "This update is already installed or older" }
             val retained = state.value
             if (retained?.release?.isSameUpdate(release) == true && retained.stage == AppUpdateStage.DOWNLOADED &&
                 store.apk(retained.id).isFile
@@ -141,7 +138,7 @@ class AppUpdateManager(private val context: Context, private val network: Networ
                 val work = workManager.getWorkInfosForUniqueWorkFlow(WORK_NAME).first()
                     .firstOrNull { it.id.toString() == current.id }
                 if (work == null || work.state.isFinished) {
-                    store.update(current.id) {
+                    store.update(current.id, onlyWhileActive = true) {
                         it.copy(
                             stage = AppUpdateStage.FAILED,
                             error = "Download interrupted. Tap Retry to download again.",
@@ -158,6 +155,11 @@ class AppUpdateManager(private val context: Context, private val network: Networ
                 }
             }
         }
+    }
+
+    suspend fun isInstalled(release: Release): Boolean = withContext(Dispatchers.IO) {
+        val target = release.apk?.versionCode ?: return@withContext false
+        PackageInfoCompat.getLongVersionCode(installedPackage()) >= target
     }
 
     /** Recheck bytes and package identity immediately before granting an installer access. */

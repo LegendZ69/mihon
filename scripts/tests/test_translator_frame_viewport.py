@@ -7,6 +7,18 @@ import unittest
 
 
 class FrameViewportTests(unittest.TestCase):
+    def test_primed_anchor_schedule_preserves_full_body_and_cancels_interrupted_input(self):
+        root = Path(__file__).resolve().parents[1] / "android-ui-validation"
+        java_home = Path(os.environ.get("JAVA_HOME", "/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home"))
+        with tempfile.TemporaryDirectory() as output:
+            sources = [root / "src/app/mihon/validation/framework" / name for name in
+                       ("FrameAnchorPolicy.java", "FrameAnchorMotion.java")]
+            subprocess.run([str(java_home / "bin/javac"), "-source", "8", "-target", "8", "-Xlint:-options", "-d", output,
+                            *map(str, sources), str(root / "tests/FrameAnchorMotionTest.java")], check=True, capture_output=True)
+            result = subprocess.run([str(java_home / "bin/java"), "-cp", output,
+                                     "app.mihon.validation.framework.FrameAnchorMotionTest"], check=True, capture_output=True, text=True)
+            self.assertIn("GREEN primed anchor schedule", result.stdout)
+
     def test_interior_anchor_policy_is_scoped_repeatable_and_nonadaptive(self):
         root = Path(__file__).resolve().parents[1] / "android-ui-validation"
         java_home = Path(os.environ.get("JAVA_HOME", "/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home"))

@@ -18,12 +18,15 @@ internal suspend fun copyVerifiedApk(
     verifyIdentity: (File) -> Unit,
     progress: suspend (Int) -> Unit,
 ) {
-    require(partial.parentFile == destination.parentFile && partial != destination)
+    require(partial.canonicalFile != destination.canonicalFile)
     check(!destination.exists()) { "An update file already exists" }
     val limit = expected?.sizeBytes ?: MAX_UPDATE_BYTES
     require(limit in 1..MAX_UPDATE_BYTES) { "Invalid update size" }
     try {
         check(partial.parentFile!!.isDirectory || partial.parentFile!!.mkdirs()) { "Update storage is unavailable" }
+        check(destination.parentFile!!.isDirectory || destination.parentFile!!.mkdirs()) {
+            "Update storage is unavailable"
+        }
         val digest = MessageDigest.getInstance("SHA-256")
         var total = 0L
         var previousProgress = -1
@@ -56,6 +59,7 @@ internal suspend fun copyVerifiedApk(
         }
         verifyIdentity(partial)
         currentCoroutineContext().ensureActive()
+        // Both directories belong to the same app-private filesystem. rename exposes no partial final file.
         check(partial.renameTo(destination)) { "Could not save the verified update" }
     } catch (error: Throwable) {
         partial.delete()

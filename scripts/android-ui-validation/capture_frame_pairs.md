@@ -55,3 +55,15 @@ python3 -B -m unittest discover -s scripts/tests -p test_translator_reader_contr
 ```
 
 For the separately declared interior WebGPU protocol, add `--frame-anchor-pixels 100`. The controller validates `webgpu` before connecting, forwards `frameAnchorPixels=100`, and requires the exact same anchor descriptor in every ready/completed window and final report. Chapter 002 and reader page 7 remain mandatory in the framework. Omitting the flag preserves the prior page-start command and evidence format. The interior protocol retains two additional setup PNGs, records a distinct restoration target, and preserves all thirty-second timing and boundary guards. Both app builds must use this same explicit protocol; old page-start captures remain a separate comparison. See README for the one-shot gesture and repeatability conditions. This option never adapts an offset or retries a failed measurement.
+
+
+The experimental slop-primed candidate additionally requires `--prime-frame-anchor` with
+`--frame-anchor-pixels 100 --backend webgpu`. It records `slop_primed_interior_drag_v2`:
+one 96-pixel priming move after 16 ms, a 120 ms hold, then the 100-pixel eased motion
+and 300 ms release hold. The framework refuses an observed touch slop of 96 pixels
+or greater. This tests whether variable discarded initial motion explains the earlier
+75/76-pixel anchor discrepancy; it does not establish a renderer defect or successful
+physical calibration. Both repeated setup hashes, every before/after hash, the selected
+page, and final restoration must still match exactly. A failed calibration stays failed;
+there is no adaptive correction or automatic retry. The original unprimed protocol is
+unchanged when the new flag is omitted. Timed 30-second gesture windows are unchanged.

@@ -10,6 +10,7 @@ import dev.zacsweers.metro.AssistedInject
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactoryKey
+import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.data.updater.AppUpdateManager
 import eu.kanade.tachiyomi.data.updater.AppUpdateStage
 import eu.kanade.tachiyomi.data.updater.isSameUpdate
@@ -31,26 +32,25 @@ class NewUpdateScreenModel(
     val release = Json.decodeFromString<Release>(releaseJson)
     private val error = MutableStateFlow<String?>(null)
     private val preparingInstall = MutableStateFlow(false)
-    val state = combine(manager.state, error, preparingInstall) { download, localError, preparing ->
+    private val installed = MutableStateFlow(release.apk?.let { it.versionCode <= BuildConfig.VERSION_CODE } == true)
+    val state = combine(manager.state, error, preparingInstall, installed) {
+            download,
+            localError,
+            preparing,
+            isInstalled,
+        ->
         val current = download?.takeIf { it.release.isSameUpdate(release) }
         State(
-            stage = if (preparing) {
-                Stage.Verifying
-            } else {
-                when (current?.stage) {
-                    AppUpdateStage.QUEUED -> Stage.Queued
-                    AppUpdateStage.DOWNLOADING -> Stage.Downloading
-                    AppUpdateStage.VERIFYING -> Stage.Verifying
-                    AppUpdateStage.DOWNLOADED -> Stage.Downloaded
-                    AppUpdateStage.FAILED -> Stage.Failed
-                    null -> Stage.Available
-                }
-            },
+            stage = appUpdateScreenStage(current?.stage, preparing, isInstalled),
             downloadProgress = current?.progress ?: 0,
             error = localError ?: current?.error,
-            canCancel = current?.stage in AppUpdateManager.activeStages,
+            canCancel = !isInstalled && current?.stage in AppUpdateManager.activeStages,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), State())
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        State(stage = if (installed.value) Stage.Installed else Stage.Available),
+    )
 
     @AssistedFactory
     @ManualViewModelAssistedFactoryKey
@@ -61,7 +61,11 @@ class NewUpdateScreenModel(
 
     fun startDownload() = perform { manager.download(release) }
     fun cancelDownload() = perform { manager.cancelDownload() }
-    fun reconcile() = perform { manager.reconcileInstalledVersion() }
+    fun reconcile() = perform {
+        // Establish the installed state before clearing metadata, so a restored screen never offers a redownload.
+        installed.value = manager.isInstalled(release)
+        manager.reconcileInstalledVersion()
+    }
 
     fun prepareInstall(onReady: (File) -> Unit) = perform {
         if (preparingInstall.value) return@perform
@@ -98,5 +102,22 @@ class NewUpdateScreenModel(
         val canCancel: Boolean = false,
     )
 
-    enum class Stage { Available, Queued, Downloading, Verifying, Downloaded, Failed }
+    enum class Stage { Available, Queued, Downloading, Verifying, Downloaded, Failed, Installed }
+}
+
+internal fun appUpdateScreenStage(
+    download: AppUpdateStage?,
+    preparing: Boolean,
+    installed: Boolean,
+): NewUpdateScreenModel.Stage = when {
+    installed -> NewUpdateScreenModel.Stage.Installed
+    preparing -> NewUpdateScreenModel.Stage.Verifying
+    else -> when (download) {
+        AppUpdateStage.QUEUED -> NewUpdateScreenModel.Stage.Queued
+        AppUpdateStage.DOWNLOADING -> NewUpdateScreenModel.Stage.Downloading
+        AppUpdateStage.VERIFYING -> NewUpdateScreenModel.Stage.Verifying
+        AppUpdateStage.DOWNLOADED -> NewUpdateScreenModel.Stage.Downloaded
+        AppUpdateStage.FAILED -> NewUpdateScreenModel.Stage.Failed
+        null -> NewUpdateScreenModel.Stage.Available
+    }
 }

@@ -374,7 +374,7 @@ internal fun translationSettingsFields(
         "Review translation quality automatically",
         review.enabled,
         "Application default: on. Uses one provider review pass after translation; " +
-            "AI assessments do not replace human passage review.",
+            "Review meaning and visual output; confidence alone does not establish accuracy.",
     ) { update(settings.copy(qualityReview = review.copy(enabled = it))) }
     choice(
         "Review coverage",

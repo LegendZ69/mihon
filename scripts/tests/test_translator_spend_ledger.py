@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 import json
 from pathlib import Path
 import stat
@@ -321,18 +321,31 @@ class SpendLedgerTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def fixture_observation_date(self, config):
+        return max(dt.date.fromisoformat(item["verified_on"])
+                   for item in [*config["profiles"].values(), config["fx"]])
+
     def test_current_fixture_preserves_official_observations_without_credit_discount(self):
         config = spend.load_json(spend.DEFAULT_CONFIG)
-        value = spend.validate_config(config, on=dt.date(2026, 9, 6))
+        value = spend.validate_config(config, on=self.fixture_observation_date(config))
         price = value["profiles"]["vertex-3.8-global-shared"]
         self.assertEqual("1.50", price["input_per_million_usd"])
         self.assertEqual("7.50", price["output_per_million_usd"])
-        self.assertEqual("1.1622", value["fx"]["usd_per_eur"])
-        self.assertEqual("1.4724", value["fx"]["sgd_per_eur"])
-        self.assertEqual("1.266907589056", value["fx"]["sgd_per_usd"])
+        for field in ("usd_per_eur", "sgd_per_eur", "sgd_per_usd", "observed_on", "verified_on"):
+            self.assertEqual(config["fx"][field], value["fx"][field])
         maximum = spend.estimate(price, value["fx"], 1048576, 65536, 6)
         self.assertEqual("12.386304", maximum["usd"])
-        self.assertEqual("15.692303", maximum["sgd"])
+        expected_sgd = (Decimal("12.386304") * Decimal(config["fx"]["sgd_per_usd"])).quantize(
+            Decimal("0.000001"), rounding=ROUND_CEILING)
+        self.assertEqual(expected_sgd, Decimal(maximum["sgd"]))
+
+    def test_fixture_reference_day_does_not_bypass_future_or_stale_guards(self):
+        config = spend.load_json(spend.DEFAULT_CONFIG)
+        reference = self.fixture_observation_date(config)
+        stale_after = max(spend.MAX_PRICING_AGE_DAYS, spend.MAX_FX_AGE_DAYS) + 1
+        for on in (reference - dt.timedelta(days=1), reference + dt.timedelta(days=stale_after)):
+            with self.subTest(on=on), self.assertRaises(spend.LedgerError):
+                spend.validate_config(config, on=on)
 
     def test_amount_and_fx_validation(self):
         for invalid in ("NaN", "Infinity", "-1", "-Infinity", "", "1e999", "0.0000000000000000001", True, 1.2):
@@ -357,7 +370,7 @@ class ConfigurationTests(unittest.TestCase):
         config = spend.load_json(spend.DEFAULT_CONFIG)
         config["fx"]["sgd_per_usd"] = "1.26"
         with self.assertRaises(spend.LedgerError):
-            spend.validate_config(config, on=dt.date(2026, 9, 6))
+            spend.validate_config(config, on=self.fixture_observation_date(config))
 
     def test_estimates_round_up_instead_of_under_reserving(self):
         config = configuration()

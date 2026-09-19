@@ -232,6 +232,62 @@ class MinifiedTranslationAcceptanceTest {
     }
 
     @Test
+    fun threeMinuteSequentialLocalOcrWorkload() = acceptance("ocr-sustained") { run ->
+        assumeTrue(
+            "Enable this bounded local-only workload explicitly",
+            InstrumentationRegistry.getArguments().getString("translation.sustainedOcr") == "true",
+        )
+        val graph = run.context.appGraph
+        val engine = PaddleOcrEngine(run.context, graph.paddleModelManager)
+        val expected = "HELLO MANGA 123"
+        val image = run.image("sustained-ocr", expected)
+        val settings = OcrSettings(pipeline = OcrPipeline.PADDLE, profile = PaddleProfile.SMALL, language = "en")
+        graph.paddleModelManager.download(PaddleProfile.SMALL, "en")
+        val started = SystemClock.elapsedRealtime()
+        var iterations = 0
+        var inferenceMillis = 0L
+        try {
+            withTimeout(240_000L) {
+                do {
+                    val before = memory()
+                    val inferenceStart = SystemClock.elapsedRealtime()
+                    val result = engine.recognize(image, settings, decodedMemoryMb = 128)
+                    val elapsed = SystemClock.elapsedRealtime() - inferenceStart
+                    inferenceMillis += elapsed
+                    validateOcr(result, image, expected)
+                    run.record(
+                        buildJsonObject {
+                            put("stage", "sustained_ocr")
+                            put("iteration", iterations++)
+                            put("elapsed_millis", elapsed)
+                            put("before_memory", before)
+                            put("after_memory", memory())
+                            put("ocr", json.parseToJsonElement(json.encodeToString(result)))
+                        },
+                    )
+                } while (SystemClock.elapsedRealtime() - started < 180_000L)
+            }
+            val duration = SystemClock.elapsedRealtime() - started
+            run.record(
+                buildJsonObject {
+                    put("stage", "sustained_complete")
+                    put("requested_duration_millis", 180_000L)
+                    put("workload_duration_millis", duration)
+                    put("inference_duration_millis", inferenceMillis)
+                    put("iterations", iterations)
+                    put("model_download_excluded", true)
+                    put("cloud_requests", 0)
+                    put("duration_scope", "Sequential native OCR, transcription checks and evidence collection")
+                },
+            )
+            assertTrue(duration >= 180_000L)
+            assertTrue(iterations > 0)
+        } finally {
+            engine.release()
+        }
+    }
+
+    @Test
     fun allThreePipelinesUseTheRealVaultPreferencesAndLocalProvider() = acceptance("pipelines") { run ->
         val graph = run.context.appGraph
         val engine = PaddleOcrEngine(run.context, graph.paddleModelManager)

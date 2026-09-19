@@ -524,7 +524,7 @@ class TranslationInspectorScreen(private val jobId: String) : Screen() {
                         item {
                             Text(
                                 "Raw OCR and measured scores remain separate from corrections. " +
-                                    "AI findings and confidence are assessments; human passage review remains pending.",
+                                    "Review meaning and visual output; confidence alone does not establish accuracy.",
                                 Modifier.padding(16.dp),
                                 style = MaterialTheme.typography.bodySmall,
                             )
@@ -612,7 +612,7 @@ private fun QualityReviewCard(
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                "Human passage review pending. An AI pass is not human approval.",
+                "Review meaning and visual output; an AI pass alone does not establish accuracy.",
                 style = MaterialTheme.typography.bodySmall,
             )
             if (review != null) {
@@ -634,7 +634,9 @@ private fun QualityReviewCard(
                     }
                 }
                 if (review.state == QualityReviewState.REPAIRED) {
-                    Text("A proposed revision was applied. AI findings may remain; meaning still needs human review.")
+                    Text(
+                        "A proposed revision was applied. Check its meaning and visual output; AI findings may remain.",
+                    )
                 }
                 Text(
                     "${review.attempts.size}/${review.settings.maxTransportAttempts} transport attempts · " +

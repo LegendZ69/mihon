@@ -387,6 +387,8 @@ def main(argv=None):
     parser.add_argument("--backend", required=True, choices=("classic", "webgpu"))
     parser.add_argument("--frame-anchor-pixels", type=int, choices=(0, 100), default=0,
                         help="Opt-in fixed interior drag for controlled WebGPU chapter 002/page 7; 0 preserves page-start protocol")
+    parser.add_argument("--prime-frame-anchor", action="store_true",
+                        help="Experimental 96-pixel touch-slop prime before the explicit 100-pixel anchor body")
     parser.add_argument("--pairs", required=True, type=int, choices=(1, 3))
     parser.add_argument("--initial-mode", required=True, choices=("original", "translated"))
     parser.add_argument("--subject-apk-sha256", required=True)
@@ -394,7 +396,7 @@ def main(argv=None):
     for flag in ("acceptance", "automatic-translation-disabled", "chapters-ahead-zero", "cached-translation-visible"):
         parser.add_argument("--" + flag, required=True, action="store_true")
     args = parser.parse_args(argv)
-    anchor = reconcile.anchor_descriptor(args.frame_anchor_pixels, args.backend)
+    anchor = reconcile.anchor_descriptor(args.frame_anchor_pixels, args.backend, args.prime_frame_anchor)
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", args.serial) is not None, "Invalid explicit serial")
     for value in (args.subject_apk_sha256, args.harness_apk_sha256):
         require(re.fullmatch(r"[0-9a-f]{64}", value) is not None, "Host-verified APK hash is required")
@@ -438,6 +440,8 @@ def main(argv=None):
             "-e", "cachedTranslationVisible", "true", f"{HARNESS}/{HARNESS}.ReaderUiInstrumentation"]
         if anchor is not None:
             command[-1:-1] = ["-e", "frameAnchorPixels", str(args.frame_anchor_pixels)]
+        if args.prime_frame_anchor:
+            command[-1:-1] = ["-e", "frameAnchorPrimed", "true"]
         manifest["instrumentation_command"] = command
         save(args.output / "manifest.json", manifest)
         instrumentation = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -448,7 +452,7 @@ def main(argv=None):
         for ordinal in range(1, args.pairs * 2 + 1):
             ready = next_event(events, "ready")
             run_id = validate_ready(ready, ordinal, args.backend, run_id, previous)
-            reconcile.validate_anchor(ready.get("frame_anchor"), args.frame_anchor_pixels, args.backend)
+            reconcile.validate_anchor(ready.get("frame_anchor"), args.frame_anchor_pixels, args.backend, args.prime_frame_anchor)
             require(ready["gate_nonce"] not in seen_nonces, "Gate nonce was reused")
             seen_nonces.add(ready["gate_nonce"])
             manifest["harness_run_id"] = run_id
@@ -462,7 +466,7 @@ def main(argv=None):
             recording.start()
             recording.arm(ready)
             complete = next_event(events, "complete", timeout=70)
-            reconcile.validate_anchor(complete.get("frame_anchor"), args.frame_anchor_pixels, args.backend)
+            reconcile.validate_anchor(complete.get("frame_anchor"), args.frame_anchor_pixels, args.backend, args.prime_frame_anchor)
             require(complete.get("ordinal") == ordinal and complete.get("gate_nonce") == ready["gate_nonce"] and
                     complete.get("gate_file") == ready["gate_file"] and complete.get("status") == "boundary_assertions_passed",
                     "Unexpected or failed window completion")

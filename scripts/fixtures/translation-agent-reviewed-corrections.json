@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "kind": "authored-controlled-agent-corrections",
+  "reviewer_kind": "agent",
+  "human_approval_claimed": false,
+  "historical_sources_unchanged": true,
+  "reviewed_export_sha256": "bdaa183f28336ff48abf5228b241b000876305a50c8acb8ab7553e5f9bf4341c",
+  "scope": "Derived expectations for owned synthetic fixtures only. Not a live model response, final render pass or human signoff. Bind to a fresh exported revision before localhost review.",
+  "ambiguities": {
+    "younger_sister": "Age relation is required; possessor is unstated. The younger sister avoids inventing my or your.",
+    "promise": "Korean omits the subject. It's a promise is the fixture-permitted less explicit wording; Promise me needs authored speaker context."
+  },
+  "geometry_rationale": {
+    "mixed_ja": "Original dark cap at (761,211) is outside old y212.8 top; lower top to209 only.",
+    "mixed_zh": "Original dark cap at (645,930) is outside old y932.8 top; lower top to929 only.",
+    "sideways_ja": "Physical baseline is clockwise90deg, not merely vertical writing.",
+    "warning": "Already repaired English warning is not changed by this fixture."
+  },
+  "pages": [
+    {
+      "image_hash": "5b622a96eb34fd46e7038c1ea2abce8f9a2c1c96a4fd0e389abe97ccb646bd0e",
+      "width": 1200,
+      "height": 1600,
+      "historical_asset": "app/src/androidTest/assets/translation/sampling/controlled-page-04.json",
+      "historical_asset_sha256": "1f85989a7ee2f4c0881fbefcc5af50379e0d38b0a086016a5c14f7c95b65fafe",
+      "historical_asset_revision": 1789151965337,
+      "reviewed_export_revision": 1789151965337,
+      "changes": [
+        {
+          "region_id": "3:region-0",
+          "expected": {
+            "sourceText": "尤娜，別打開那扇門！\n敵人還在外面。",
+            "correctedText": null,
+            "type": "narration",
+            "included": true
+          },
+          "set": {
+            "type": "dialogue"
+          }
+        },
+        {
+          "region_id": "3:region-1",
+          "expected": {
+            "sourceText": "如果我沒回來，\n就帶妹妹離開這裡。",
+            "translatedText": "If I don't come back,\ntake your sister and leave this place.",
+            "correctedText": null,
+            "type": "narration",
+            "included": true
+          },
+          "set": {
+            "type": "dialogue",
+            "translatedText": "If I don't come back, take the younger sister away from here."
+          }
+        }
+      ]
+    },
+    {
+      "image_hash": "4df2188c319afaf90f8b0e947df081c0a3cc99ebe8dd564c9a3b2ef24834b5ce",
+      "width": 1200,
+      "height": 1600,
+      "historical_asset": "app/src/androidTest/assets/translation/sampling/controlled-page-05.json",
+      "historical_asset_sha256": "e97bf2867bc2178662cee4c9e783663aac97bfa60f0f2ab55ea9549b4455110f",
+      "historical_asset_revision": 1789151965339,
+      "reviewed_export_revision": 1789237534456,
+      "changes": [
+        {
+          "region_id": "4:region-0",
+          "expected": {
+            "points": [
+              {
+                "x": 396.0,
+                "y": 212.8
+              },
+              {
+                "x": 805.2,
+                "y": 212.8
+              },
+              {
+                "x": 805.2,
+                "y": 260.8
+              },
+              {
+                "x": 396.0,
+                "y": 260.8
+              }
+            ],
+            "sourceText": "ユナ、こっちだ！",
+            "correctedText": null,
+            "included": true
+          },
+          "set": {
+            "points": [
+              {
+                "x": 396.0,
+                "y": 209.0
+              },
+              {
+                "x": 805.2,
+                "y": 209.0
+              },
+              {
+                "x": 805.2,
+                "y": 260.8
+              },
+              {
+                "x": 396.0,
+                "y": 260.8
+              }
+            ]
+          }
+        },
+        {
+          "region_id": "4:region-2",
+          "expected": {
+            "points": [
+              {
+                "x": 465.6,
+                "y": 932.8
+              },
+              {
+                "x": 734.4,
+                "y": 932.8
+              },
+              {
+                "x": 734.4,
+                "y": 979.2
+              },
+              {
+                "x": 465.6,
+                "y": 979.2
+              }
+            ],
+            "sourceText": "出口在左边",
+            "correctedText": null,
+            "type": "dialogue",
+            "included": true
+          },
+          "set": {
+            "type": "sign",
+            "points": [
+              {
+                "x": 465.6,
+                "y": 929.0
+              },
+              {
+                "x": 734.4,
+                "y": 929.0
+              },
+              {
+                "x": 734.4,
+                "y": 979.2
+              },
+              {
+                "x": 465.6,
+                "y": 979.2
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "image_hash": "caa85f68b36c050d3182a0ec46f69ccca96050aaf7c9642cb4367f94efbff384",
+      "width": 1200,
+      "height": 1600,
+      "historical_asset": "app/src/androidTest/assets/translation/sampling/controlled-page-07.json",
+      "historical_asset_sha256": "a1b54e1d8d83a65d9216654b0f86b19f0a9191d8f732ef5eb17c43667f632949",
+      "historical_asset_revision": 1789151965342,
+      "reviewed_export_revision": 1789151965342,
+      "changes": [
+        {
+          "region_id": "6:region-1",
+          "expected": {
+            "sourceText": "逃げて！",
+            "correctedText": null,
+            "rotation": 0.0,
+            "included": true
+          },
+          "set": {
+            "rotation": 90.0
+          }
+        }
+      ]
+    },
+    {
+      "image_hash": "6493ca6dfb50a0032a66d74baaa04056af250e9c966e9e7dbec802c591e0a36a",
+      "width": 1200,
+      "height": 3600,
+      "historical_asset": "app/src/androidTest/assets/translation/sampling/controlled-page-11.json",
+      "historical_asset_sha256": "6d18a0040d0a68d498ba0cb2f498df45c6672af85a41ca545d5522bea138488e",
+      "historical_asset_revision": 1789151965350,
+      "reviewed_export_revision": 1789151965350,
+      "changes": [
+        {
+          "region_id": "10:region-3",
+          "expected": {
+            "sourceText": "약속이야.",
+            "translatedText": "I promise.",
+            "correctedText": null,
+            "included": true
+          },
+          "set": {
+            "translatedText": "It's a promise."
+          }
+        }
+      ]
+    }
+  ]
+}

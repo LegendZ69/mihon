@@ -52,6 +52,18 @@ class VerifiedApkDownloadTest {
     }
 
     @Test
+    fun `keeps unverified bytes outside the shared apk directory`() = runBlocking {
+        val staged = File(directory, "staging/update.part")
+        val shared = File(directory, "apks/update.apk")
+        copyVerifiedApk(ByteArrayInputStream(bytes), staged, shared, expected(), {
+            assertTrue(staged.isFile)
+            assertTrue(shared.parentFile!!.listFiles()!!.isEmpty())
+        }, {})
+        assertFalse(staged.exists())
+        assertArrayEquals(bytes, shared.readBytes())
+    }
+
+    @Test
     fun `truncated oversized and corrupted bodies never publish`() {
         listOf(bytes.copyOf(bytes.size - 1), bytes + 0.toByte(), bytes.copyOf().apply { this[0] = 7 }).forEach { body ->
             assertThrows(IOException::class.java) {

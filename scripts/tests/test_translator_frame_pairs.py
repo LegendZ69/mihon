@@ -51,6 +51,23 @@ def report_fixture(pairs=3, canonical=False):
 
 
 class PairedWindowsTests(unittest.TestCase):
+    def test_primed_protocol_preserves_guards_and_refuses_mixed_input_schedules(self):
+        report = self.interior_report()
+        report.update(viewport_reset_policy=frames.PRIMED_POLICY,
+                      frame_anchor=frames.anchor_descriptor(100, "webgpu", True))
+        for window in report["frame_windows"]:
+            window["frame_anchor"] = frames.anchor_descriptor(100, "webgpu", True)
+        self.assertEqual(len(frames.validate_report(report)), 2)
+        report["frame_windows"][0]["frame_anchor"] = frames.anchor_descriptor(100, "webgpu")
+        with self.assertRaises(ValueError):
+            frames.validate_report(report)
+        report["frame_windows"][0]["frame_anchor"] = frames.anchor_descriptor(100, "webgpu", True)
+        report["frame_windows"][0]["after_viewport_sha256"] = "f" * 64
+        with self.assertRaises(ValueError):
+            frames.validate_report(report)
+        with self.assertRaises(ValueError):
+            frames.anchor_descriptor(0, "webgpu", True)
+
     def interior_report(self):
         report = report_fixture(1, canonical=True)
         report.update(backend="webgpu", viewport_reset_policy=frames.INTERIOR_POLICY,

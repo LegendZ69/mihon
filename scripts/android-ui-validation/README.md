@@ -18,6 +18,28 @@ The explicit `exercise` plan supports:
 
 **Comparison cycles are recorded separately from font/style changes.** The separate `styleCycles` plan changes only the existing controlled-series override's system font family and background opacity through real UI controls. It requires additional host checks described below. Input completion and screenshot hashes do not establish overlay alignment, readable text, absence of ghosting, frame deadlines, or translation meaning. Review the screenshots alongside reader traces. Exact zoom matrices are unavailable through the framework UI interface.
 
+## Reader Activity lifecycle
+
+The additive `readerLifecycle` plan performs exactly **ten real reader exits and chapter reopens**, separately for the already-selected classic or WebGPU scrolling backend. This is a candidate protocol with passing host policy checks; its implementation does not establish a device result. Start inside a controlled cached chapter with visible toolbar/slider. Verify automatic translation is off, chapters ahead is zero, the starting comparison mode, and that Back returns to the controlled local series with both exact chapter names visible and no selected chapters. Chapter-number display mode or hidden rows must be corrected by the device owner before invocation; the harness will not search or guess another target.
+
+```sh
+adb -s SERIAL shell am instrument -w -r \
+  -e acceptance true -e plan readerLifecycle -e cycles 10 \
+  -e backend classic -e initialMode translated \
+  -e automaticTranslationDisabled true -e chaptersAheadZero true -e cachedTranslationVisible true \
+  app.mihon.validation.framework/app.mihon.validation.framework.ReaderUiInstrumentation
+```
+
+For WebGPU, select that backend before a separate invocation and pass `-e backend webgpu`. Each cycle sends Back once from the verified ReaderActivity, observes the main activity and exact local-series screen without a reader viewport, then clicks only the uniquely identified initial chapter row. It requires a different resumed ReaderActivity task token, the same subject PID and backend, the original page, and identical canonical viewport pixels. A comparison toggle, same Activity token, unknown screen, changed process or failed pixel restoration stops the run. It never clicks Translate, Retry, Resume, provider settings or a different series. The chapter-row guard uses current accessibility nodes, including its isolated clickable and long-clickable row, rather than fixed coordinates.
+
+Setup normalizes the selected page to page start through the existing adjacent-page reset. Both repeated setup and each reopened/restored viewport must match the initial canonical pixels. No comparison toggle or overlay preference is written; arbitrary entry offset is not a restoration target. The final journal marks `reader_lifecycle_restore_required=false` only after the controlled chapter/page/backend and pixels are restored. An interrupted or failed run retains the outstanding obligation; inspect it before another run. Normal reading history/progress effects from exiting the reader are not rolled back.
+
+The harness permits only three fixed shell query forms for this plan: subject `pidof`, a bounded activity dump, and a bounded `meminfo` for the validated numeric PID. It retains only the resumed subject activity identity and discrete Java/native/graphics/PSS/RSS values when available, not the complete activity dump or app files. Initial, exited, reopened and restored samples are labelled separately. New ActivityRecord identities are system task observations, not direct `onDestroy` callback evidence. These samples do not measure allocation totals, memory peaks, complete GPU memory, or prove absence of leaks. Fresh-process comparisons require a separate owner-controlled restart and launch/PID receipt; this plan deliberately fails on a process change. It performs no OCR, so it cannot close sustained OCR acceptance.
+
+```sh
+python3 -B -m unittest discover -s scripts/tests -p test_translator_reader_lifecycle.py -v
+```
+
 ## Style cycles
 
 Start from the same controlled reader/page with visible cached translation and toolbar. Before executing, the device owner must verify automatic translation is off, chapters ahead is zero, and this series already has an override. The harness refuses global `Translation defaults`, an imported font path, an unexpected app/series/chapter or missing controls. It follows reader More options → Translator queue and settings → Settings → `Settings for this series`. It does not open JSON, credentials, defaults, imports, Translate, Retry or Resume controls.

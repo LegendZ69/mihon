@@ -8,8 +8,15 @@ import app.cash.sqldelight.db.SqlDriver
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteConfiguration
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteDatabaseType
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteDriver
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -38,12 +45,78 @@ import tachiyomi.domain.translation.model.TranslationJobState
 import tachiyomi.domain.translation.model.TranslationPageResult
 import tachiyomi.domain.translation.model.TranslationPoint
 import tachiyomi.domain.translation.model.TranslationSettings
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Uses a disposable real SQLite database; never touches application data or resumes provider work. */
 @RunWith(AndroidJUnit4::class)
 class TranslationArchivePersistenceTest {
+    @Test
+    fun cancelledStagedRestoreRollsBackAndClosesOnlyItsOwnedDirectory() = databaseTest { fixture ->
+        val db = fixture.open()
+        val source = chapter()
+        val preservedId = db.archive.restore(sequenceOf(source)).jobIds.single()
+        val preserved = db.archive.snapshot(preservedId)!!
+        val beforeJobs = db.normal.jobs()
+        val stagingRoot = File(fixture.directory, "transfer-staging").apply { check(mkdirs()) }
+        val unrelated = File(stagingRoot, "unrelated-marker").apply { writeText("Preserve other staged work") }
+        val codec = TranslationBackupCodec(stagingRoot)
+        val encoded = ByteArrayOutputStream()
+        codec.write(
+            flowOf(
+                source.copy(job = source.job.copy(id = "cancel-first"), reviews = emptyList()),
+                source.copy(job = source.job.copy(id = "cancel-second"), reviews = emptyList()),
+            ),
+            encoded,
+        )
+        val staged = codec.read(encoded.toByteArray().inputStream())
+        val stagedDirectory = staged.directory
+        coroutineScope {
+            val firstChapterApplied = CompletableDeferred<Unit>()
+            val release = CountDownLatch(1)
+            val operation = launch(Dispatchers.IO) {
+                val owner = currentCoroutineContext()
+                db.archive.restore(
+                    sequence {
+                        staged.chapters().forEachIndexed { index, incoming ->
+                            if (index == 1) {
+                                // The previous yield returned only after the first chapter's SQL writes.
+                                firstChapterApplied.complete(Unit)
+                                check(release.await(5, TimeUnit.SECONDS)) { "Cancellation barrier was not released" }
+                                owner.ensureActive()
+                            }
+                            yield(incoming)
+                        }
+                    },
+                )
+            }
+            try {
+                withTimeout(5_000) { firstChapterApplied.await() }
+                assertTrue("Staging must survive while restore still owns it", stagedDirectory.isDirectory)
+                operation.cancel()
+                release.countDown()
+                operation.join()
+                assertTrue(operation.isCancelled)
+            } finally {
+                withContext(NonCancellable) {
+                    operation.cancel()
+                    release.countDown()
+                    operation.join()
+                    // Match Management's cancellation boundary: close only after operation termination.
+                    staged.close()
+                }
+            }
+        }
+        assertTrue("Owned staged archive must be removed after cancellation", !stagedDirectory.exists())
+        assertEquals("Preserve other staged work", unrelated.readText())
+        val reopened = fixture.reopen()
+        assertEquals(beforeJobs, reopened.normal.jobs())
+        assertEquals(preserved, reopened.archive.snapshot(preservedId))
+    }
+
     @Test
     fun selectedReviewPinsPromptsAndProviderAcrossDatabaseRestart() = databaseTest { fixture ->
         val db = fixture.open()
@@ -618,7 +691,7 @@ class TranslationArchivePersistenceTest {
 
     private class Fixture : java.io.Closeable {
         private val context = ApplicationProvider.getApplicationContext<Context>()
-        private val directory = File(context.cacheDir, "translation-archive-test-${UUID.randomUUID()}").apply {
+        val directory = File(context.cacheDir, "translation-archive-test-${UUID.randomUUID()}").apply {
             check(mkdirs())
         }
         private var active: Opened? = null

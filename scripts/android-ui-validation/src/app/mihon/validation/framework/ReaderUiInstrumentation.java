@@ -15,11 +15,13 @@ import android.os.Bundle;
 import android.os.Build;
 import android.os.SystemClock;
 import android.os.PowerManager;
+import android.os.ParcelFileDescriptor;
 import android.provider.Settings;
 import android.system.Os;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.WindowManager;
+import android.view.ViewConfiguration;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import org.json.JSONArray;
@@ -27,9 +29,12 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Self instrumentation: the installed reader remains in its own process and keeps its own ABI. */
 public final class ReaderUiInstrumentation extends Instrumentation {
@@ -54,6 +59,9 @@ public final class ReaderUiInstrumentation extends Instrumentation {
     private boolean stylePlan;
     private boolean framePlan;
     private boolean qualityPlan;
+    private boolean lifecyclePlan;
+    private String lifecycleBaselineHash;
+    private final JSONArray lifecycleSamples = new JSONArray();
     private String initialFrameMode;
     private String frameBackend;
     private FrameAnchorPolicy frameAnchor = FrameAnchorPolicy.parse("", null, "0");
@@ -102,14 +110,16 @@ public final class ReaderUiInstrumentation extends Instrumentation {
                 Build.VERSION.SDK_INT >= 28 ? subject.getLongVersionCode() : subject.versionCode)
                 .put("subject_certificate_sha256", certificates).put("subject_debuggable", false);
             String plan = arguments.getString("plan", "inspect");
-            require(plan.equals("inspect") || plan.equals("exercise") || plan.equals("styleCycles") || plan.equals("framePairs") || plan.equals("qualityReview"), "Unknown plan");
+            require(plan.equals("inspect") || plan.equals("exercise") || plan.equals("styleCycles") || plan.equals("framePairs") || plan.equals("qualityReview") || plan.equals("readerLifecycle"), "Unknown plan");
             exercisePlan = plan.equals("exercise");
             stylePlan = plan.equals("styleCycles");
             framePlan = plan.equals("framePairs");
             qualityPlan = plan.equals("qualityReview");
+            lifecyclePlan = plan.equals("readerLifecycle");
             int cycles = Integer.parseInt(arguments.getString("cycles", "10"));
             require(cycles >= 1 && cycles <= 10, "Cycles must be 1..10");
-            if (exercisePlan || stylePlan || framePlan || qualityPlan) {
+            if (lifecyclePlan) require(cycles == ReaderLifecyclePolicy.CYCLES, "Reader lifecycle requires exactly ten cycles");
+            if (exercisePlan || stylePlan || framePlan || qualityPlan || lifecyclePlan) {
                 require("true".equals(arguments.getString("automaticTranslationDisabled")),
                     "Host must first verify automatic translation is disabled for this controlled series");
             }
@@ -118,7 +128,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
                 require("true".equals(arguments.getString("seriesOverrideExists")), "An existing controlled-series override is required");
             }
             int framePairs = Integer.parseInt(arguments.getString("pairs", "3"));
-            if (framePlan) {
+            if (framePlan || lifecyclePlan) {
                 require(framePairs >= 1 && framePairs <= 3, "Frame pairs must be 1..3");
                 require("true".equals(arguments.getString("chaptersAheadZero")), "Host must verify chapters ahead is zero");
                 require("true".equals(arguments.getString("cachedTranslationVisible")), "Host must verify a visible cached translation");
@@ -127,7 +137,8 @@ public final class ReaderUiInstrumentation extends Instrumentation {
                 frameBackend = arguments.getString("backend");
                 require("webgpu".equals(frameBackend) || "classic".equals(frameBackend), "Explicit observed backend is required");
             }
-            frameAnchor = FrameAnchorPolicy.parse(plan, frameBackend, arguments.getString("frameAnchorPixels"));
+            frameAnchor = FrameAnchorPolicy.parse(plan, frameBackend, arguments.getString("frameAnchorPixels"),
+                Boolean.parseBoolean(arguments.getString("frameAnchorPrimed", "false")));
             output = new File(getTargetContext().getFilesDir(), "reader-validation/" + UUID.randomUUID());
             require(output.mkdirs(), "Cannot create private evidence directory");
             Os.chmod(output.getParent(), 0700);
@@ -147,7 +158,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
             originalChapter = selectedChapter(foreground());
             require(originalChapter != null, "Open the controlled fixture reader with its toolbar visible");
             reader(originalChapter, false);
-            originalPage = framePlan ? FrameViewportReset.pageNumber(pageProgress()) : pageProgress();
+            originalPage = framePlan || lifecyclePlan ? FrameViewportReset.pageNumber(pageProgress()) : pageProgress();
             frameAnchor.requireTarget(originalChapter, (int)originalPage);
             authorizedReader = true;
             originalRotation = rotation();
@@ -158,7 +169,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
             report.put("schema", 1).put("subject_package", SUBJECT).put("harness_package", HARNESS)
                 .put("plan", plan).put("fixture_title", TITLE).put("initial_chapter", originalChapter)
                 .put("initial_page", originalPage).put("started_wall_ms", System.currentTimeMillis())
-                .put("automatic_translation_off", (exercisePlan || stylePlan || framePlan) ? "host_verified_prerequisite" : "not_required")
+                .put("automatic_translation_off", (exercisePlan || stylePlan || framePlan || lifecyclePlan) ? "host_verified_prerequisite" : "not_required")
                 .put("scope", "Framework UI actions against a separate already-running minified app; no app ABI or storage access")
                 .put("meaning_review", "not_assessed").put("font_style_changes", "not_exercised")
                 .put("comparison_cycles", 0).put("chapter_cycles", 0)
@@ -169,10 +180,10 @@ public final class ReaderUiInstrumentation extends Instrumentation {
                     .put("entry_offset_restoration", "not_claimed: setup normalizes the selected page before the measured baseline")
                     .put("cache_scope", "Host selected the downloaded controlled chapter; UI verifies adjacent/selected page identity, not private cache files");
                 if (frameAnchor.enabled()) {
-                    report.put("viewport_reset_policy", "adjacent_cached_page_then_fixed_interior_drag_v1")
+                    report.put("viewport_reset_policy", "adjacent_cached_page_then_" + frameAnchor.protocol())
                         .put("restoration_target", "repeatable_interior_anchor")
                         .put("frame_anchor", frameAnchorDescriptor())
-                        .put("anchor_displacement_scope", "100 physical pixels requested finger travel; touch slop may change actual document displacement. Exact repeated rendered pixels define acceptance.");
+                        .put("anchor_displacement_scope", "100-pixel motion body; optional separately declared priming input. Finger travel is not document displacement. Exact repeated rendered pixels define acceptance.");
                 }
                 checkpoint("frame_entry_before_canonical_setup", false, true);
                 entryFrameHash = lastViewportHash;
@@ -190,6 +201,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
                 checkpoint("initial", true);
             }
             if (stylePlan) runStyleCycles(cycles);
+            if (lifecyclePlan) runReaderLifecycle(cycles);
             if (plan.equals("exercise")) {
                 for (int i = 0; i < cycles; i++) {
                     toggleOriginal();
@@ -245,6 +257,8 @@ public final class ReaderUiInstrumentation extends Instrumentation {
             try {
                 if (authorizedReader && stylePlan && ui != null) {
                     restoreStyleAfterFailure();
+                } else if (authorizedReader && lifecyclePlan && ui != null) {
+                    restoreReaderLifecycle();
                 } else if (authorizedReader && (exercisePlan || framePlan) && ui != null) {
                     if (framePlan) require(!report.optBoolean("comparison_pending_toggle", false), "Interrupted toggle needs explicit UI inspection before restoration");
                     if (framePlan) reader(originalChapter, true);
@@ -268,7 +282,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
                     }
                 } else if (qualityPlan) {
                     report.put("restoration", "No source, style or chapter changes; selected-page review result retained");
-                } else if (!exercisePlan && !stylePlan && !framePlan) {
+                } else if (!exercisePlan && !stylePlan && !framePlan && !lifecyclePlan) {
                     report.put("restoration", "not_required: inspect dispatched no input");
                 }
             } catch (Throwable failure) {
@@ -472,6 +486,166 @@ public final class ReaderUiInstrumentation extends Instrumentation {
         if (node.isVisibleToUser() && name.contentEquals(node.getClassName() == null ? "" : node.getClassName())) return true;
         for (int i = 0; i < node.getChildCount(); i++) if (hasClass(node.getChild(i), name)) return true;
         return false;
+    }
+
+    private void runReaderLifecycle(int cycles) throws Exception {
+        verifyLifecycleBackend();
+        report.put("reader_lifecycle_cycles", 0).put("reader_lifecycle_restore_required", true)
+            .put("backend", frameBackend).put("initial_mode", initialFrameMode)
+            .put("lifecycle_samples", lifecycleSamples)
+            .put("lifecycle_scope", "Exactly ten Back exits to the controlled local series and chapter-row reopens; distinct resumed ActivityRecord tokens in one PID, not process restarts or callback instrumentation")
+            .put("memory_scope", "Discrete process meminfo endpoints; not allocation totals, peaks, GPU inventory or a leak-free guarantee")
+            .put("overlay_scope", "No comparison toggle or preference write; exact canonical viewport pixels must return")
+            .put("entry_offset_restoration", "Page is retained; arbitrary entry offset is normalized to page start");
+        resetFrameViewport("lifecycle_setup");
+        checkpoint("lifecycle_baseline", true);
+        lifecycleBaselineHash = lastViewportHash;
+        resetFrameViewport("lifecycle_setup_repeatability");
+        checkpoint("lifecycle_baseline_repeatability", false, true);
+        require(lifecycleBaselineHash.equals(lastViewportHash), "Lifecycle canonical baseline is not repeatable");
+        ReaderLifecyclePolicy.run(cycles, new ReaderLifecyclePolicy.Driver() {
+            @Override public ReaderLifecyclePolicy.State observe(String phase, int cycle) throws Exception {
+                return lifecycleObservation(phase, cycle);
+            }
+            @Override public void exitReader() throws Exception {
+                reader(originalChapter, false);
+                require(lifecycleActivity().getString("component").endsWith(".ui.reader.ReaderActivity"),
+                    "Back is restricted to the controlled ReaderActivity");
+                action("reader_lifecycle_exit_intent", new JSONObject().put("chapter", originalChapter));
+                require(ui.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK),
+                    "Reader Back action was rejected");
+                settle();
+                require(UiStateTransition.afterSingleAction(() -> { },
+                    () -> find(foreground(), SUBJECT + ":id/viewer_container", true) == null,
+                    SystemClock::elapsedRealtime, SystemClock::sleep, 5000), "Reader viewport remained after Back");
+                lifecycleChapterRow();
+            }
+            @Override public void reopenChapter() throws Exception { reopenLifecycleChapter(); }
+            @Override public void verifyRestoredReader(int cycle) throws Exception {
+                verifyLifecycleBackend();
+                resetFrameViewport("lifecycle_" + cycle);
+                checkpoint("lifecycle_" + cycle + "_restored", true);
+                require(lifecycleBaselineHash.equals(lastViewportHash), "Reader reopen changed canonical overlay pixels");
+                lifecycleObservation("restored", cycle);
+            }
+            @Override public void completed(int cycle) throws Exception {
+                report.put("reader_lifecycle_cycles", cycle);
+                action("reader_lifecycle_completed", new JSONObject().put("cycle", cycle));
+            }
+        });
+    }
+
+    private void verifyLifecycleBackend() throws Exception {
+        reader(originalChapter, false);
+        require(rotation() == originalRotation && contextInteractive(), "Lifecycle requires the original interactive orientation");
+        require(hasClass(foreground(), "androidx.recyclerview.widget.RecyclerView") == frameBackend.equals("classic"),
+            "Reader structure differs from the declared scrolling backend");
+    }
+
+    private AccessibilityNodeInfo lifecycleChapterRow() throws Exception {
+        AccessibilityNodeInfo root = foreground();
+        require(find(root, SUBJECT + ":id/viewer_container", true) == null &&
+            find(root, TITLE, false) != null && find(root, "Local source", false) != null &&
+            find(root, FIRST, false) != null && find(root, SECOND, false) != null,
+            "Expected the controlled local series with both exact chapter rows; no navigation fallback");
+        require(lifecycleActivity().getString("component").endsWith(".ui.main.MainActivity"),
+            "Chapter reopening is restricted to the main series screen");
+        require(countLabel(root, originalChapter) == 1, "Initial chapter label must be unique");
+        AccessibilityNodeInfo row = find(root, originalChapter, false);
+        for (int i = 0; i < 3 && row != null && !row.isClickable(); i++) row = row.getParent();
+        String other = originalChapter.equals(FIRST) ? SECOND : FIRST;
+        require(row != null && row.isVisibleToUser() && row.isEnabled() && row.isClickable() &&
+            row.isLongClickable() && !row.isSelected() && countLabel(row, originalChapter) == 1 &&
+            countLabel(row, other) == 0, "Exact chapter row has no isolated unselected click action");
+        return row;
+    }
+
+    private int countLabel(AccessibilityNodeInfo node, String label) {
+        if (node == null) return 0;
+        int count = node.isVisibleToUser() && (label.contentEquals(node.getText() == null ? "" : node.getText()) ||
+            label.contentEquals(node.getContentDescription() == null ? "" : node.getContentDescription())) ? 1 : 0;
+        for (int i = 0; i < node.getChildCount(); i++) count += countLabel(node.getChild(i), label);
+        return count;
+    }
+
+    private void reopenLifecycleChapter() throws Exception {
+        AccessibilityNodeInfo row = lifecycleChapterRow();
+        Rect bounds = new Rect();
+        row.getBoundsInScreen(bounds);
+        action("reader_lifecycle_reopen_intent", new JSONObject().put("chapter", originalChapter)
+            .put("observed_row_bounds", bounds.toShortString()));
+        require(row.performAction(AccessibilityNodeInfo.ACTION_CLICK), "Chapter row click was rejected");
+        settle();
+        require(UiStateTransition.afterSingleAction(() -> { },
+            () -> find(foreground(), SUBJECT + ":id/viewer_container", true) != null,
+            SystemClock::elapsedRealtime, SystemClock::sleep, 5000), "Chapter click did not open a reader viewport");
+        reader(originalChapter, true);
+    }
+
+    private void restoreReaderLifecycle() throws Exception {
+        if (!report.optBoolean("reader_lifecycle_restore_required", false)) {
+            report.put("restoration", "not_required: lifecycle preflight dispatched no input");
+            return;
+        }
+        AccessibilityNodeInfo root = foreground();
+        if (find(root, SUBJECT + ":id/viewer_container", true) == null) reopenLifecycleChapter();
+        reader(originalChapter, true);
+        verifyLifecycleBackend();
+        resetFrameViewport("lifecycle_finally");
+        checkpoint("lifecycle_finally_restored", true);
+        require(lifecycleBaselineHash != null && lifecycleBaselineHash.equals(lastViewportHash),
+            "Lifecycle restoration did not match the recorded canonical pixels");
+        report.put("reader_lifecycle_restore_required", false)
+            .put("restoration", "Initial chapter/page/backend and canonical pixels restored; no overlay preference mutation; arbitrary entry offset not claimed");
+    }
+
+    private ReaderLifecyclePolicy.State lifecycleObservation(String phase, int cycle) throws Exception {
+        boolean exited = phase.equals("exited");
+        if (exited) lifecycleChapterRow(); else verifyLifecycleBackend();
+        JSONObject activity = lifecycleActivity();
+        String expected = exited ? ".ui.main.MainActivity" : ".ui.reader.ReaderActivity";
+        require(activity.getString("component").endsWith(expected), "Unexpected resumed Activity during lifecycle observation");
+        String rawPid = lifecycleShell("pidof " + SUBJECT).trim();
+        require(rawPid.matches("[1-9][0-9]*"), "A unique subject PID is required for lifecycle attribution");
+        int pid = Integer.parseInt(rawPid);
+        JSONObject sample = new JSONObject().put("phase", phase).put("cycle", cycle)
+            .put("elapsed_ns", SystemClock.elapsedRealtimeNanos()).put("pid", pid).put("activity", activity);
+        try {
+            String raw = lifecycleShell("dumpsys -t 5 meminfo " + pid);
+            JSONObject memory = new JSONObject();
+            Matcher values = Pattern.compile("(?m)(Java Heap|Native Heap|Graphics|TOTAL PSS|TOTAL RSS):\\s*([0-9]+)").matcher(raw);
+            while (values.find()) memory.put(values.group(1).replace(' ', '_').toLowerCase(java.util.Locale.ROOT) + "_kb", Long.parseLong(values.group(2)));
+            sample.put("memory", memory).put("memory_available", memory.length() > 0);
+        } catch (Exception unavailable) {
+            sample.put("memory_available", false).put("memory_error", unavailable.getClass().getSimpleName());
+        }
+        lifecycleSamples.put(sample);
+        action("reader_lifecycle_observed", sample);
+        return new ReaderLifecyclePolicy.State(exited ? ReaderLifecyclePolicy.Screen.SERIES : ReaderLifecyclePolicy.Screen.READER,
+            activity.getString("token"), pid);
+    }
+
+    private JSONObject lifecycleActivity() throws Exception {
+        String raw = lifecycleShell("dumpsys -t 5 activity activities");
+        Matcher resumed = Pattern.compile("(?m)^\\s*(?:topResumedActivity|mResumedActivity)\\s*[:=]\\s*ActivityRecord\\{(\\S+)\\s+u[0-9]+\\s+app\\.mihon/([^\\s}]+)").matcher(raw);
+        require(resumed.find(), "Resumed subject Activity identity is unavailable");
+        return new JSONObject().put("token", resumed.group(1)).put("component", resumed.group(2));
+    }
+
+    private String lifecycleShell(String command) throws Exception {
+        require(lifecyclePlan && (command.equals("pidof " + SUBJECT) || command.equals("dumpsys -t 5 activity activities") ||
+            command.matches("dumpsys -t 5 meminfo [1-9][0-9]*")), "Lifecycle shell query is not allowlisted");
+        try (ParcelFileDescriptor descriptor = ui.executeShellCommand(command);
+             FileInputStream stream = new ParcelFileDescriptor.AutoCloseInputStream(descriptor);
+             ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int read;
+            while ((read = stream.read(buffer)) != -1) {
+                require(bytes.size() + read <= 512 * 1024, "Lifecycle query exceeds evidence bound");
+                bytes.write(buffer, 0, read);
+            }
+            return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 
     private void runFrameWindow(int pair, String mode) throws Exception {
@@ -1152,9 +1326,12 @@ public final class ReaderUiInstrumentation extends Instrumentation {
     }
 
     private JSONObject frameAnchorDescriptor() throws Exception {
-        return new JSONObject().put("protocol", "fixed_interior_drag_v1")
+        JSONObject descriptor = new JSONObject().put("protocol", frameAnchor.protocol())
             .put("requested_drag_pixels", frameAnchor.requestedPixels).put("direction", "up")
             .put("motion_ms", 420).put("release_hold_ms", 300).put("expected_page", 7);
+        if (frameAnchor.primed) descriptor.put("prime_pixels", FrameAnchorMotion.PRIME_PIXELS)
+            .put("prime_move_ms", FrameAnchorMotion.PRIME_MOVE_MS).put("prime_hold_ms", FrameAnchorMotion.PRIME_HOLD_MS);
+        return descriptor;
     }
 
     private void resetFrameBaseline(String phase) throws Exception {
@@ -1177,20 +1354,31 @@ public final class ReaderUiInstrumentation extends Instrumentation {
             float startY = bounds.centerY() + frameAnchor.requestedPixels / 2f;
             float endY = startY - frameAnchor.requestedPixels;
             long down = SystemClock.uptimeMillis();
-            boolean released = false;
-            touchUnchecked(down, MotionEvent.ACTION_DOWN, new float[]{x}, new float[]{startY});
-            try {
-                for (int move = 1; move <= 25; move++) {
-                    sleepUntil(down + move * 420L / 25);
-                    double fraction = (1 - Math.cos(Math.PI * move / 25.0)) / 2;
-                    float y = startY + (endY - startY) * (float)fraction;
-                    touchUnchecked(down, MotionEvent.ACTION_MOVE, new float[]{x}, new float[]{y});
+            if (frameAnchor.primed) {
+                int slop = ViewConfiguration.get(getTargetContext()).getScaledTouchSlop();
+                FrameAnchorMotion.requireSlop(slop);
+                require(startY + FrameAnchorMotion.PRIME_PIXELS < bounds.bottom && endY > bounds.top,
+                    "Primed anchor input must remain inside the observed viewport");
+                FrameAnchorMotion.run(down, x, startY, frameAnchor.requestedPixels,
+                    (event, eventX, eventY) -> touchUnchecked(down, event, new float[]{eventX}, new float[]{eventY}),
+                    this::sleepUntil);
+                report.put("anchor_observed_touch_slop_px", slop);
+            } else {
+                boolean released = false;
+                touchUnchecked(down, MotionEvent.ACTION_DOWN, new float[]{x}, new float[]{startY});
+                try {
+                    for (int move = 1; move <= 25; move++) {
+                        sleepUntil(down + move * 420L / 25);
+                        double fraction = (1 - Math.cos(Math.PI * move / 25.0)) / 2;
+                        float y = startY + (endY - startY) * (float)fraction;
+                        touchUnchecked(down, MotionEvent.ACTION_MOVE, new float[]{x}, new float[]{y});
+                    }
+                    sleepUntil(down + 720);
+                    touchUnchecked(down, MotionEvent.ACTION_UP, new float[]{x}, new float[]{endY});
+                    released = true;
+                } finally {
+                    if (!released) touchUnchecked(down, MotionEvent.ACTION_CANCEL, new float[]{x}, new float[]{endY});
                 }
-                sleepUntil(down + 720);
-                touchUnchecked(down, MotionEvent.ACTION_UP, new float[]{x}, new float[]{endY});
-                released = true;
-            } finally {
-                if (!released) touchUnchecked(down, MotionEvent.ACTION_CANCEL, new float[]{x}, new float[]{endY});
             }
             settle();
             reader(originalChapter, true);
@@ -1202,7 +1390,7 @@ public final class ReaderUiInstrumentation extends Instrumentation {
     }
 
     private void resetFrameViewport(String phase) throws Exception {
-        require(framePlan, "Canonical normalization is restricted to the frame plan");
+        require(framePlan || lifecyclePlan, "Canonical normalization is restricted to the frame or lifecycle plan");
         reader(originalChapter, true);
         AccessibilityNodeInfo node = slider(foreground());
         require(node != null, "Canonical reset requires the controlled chapter page slider");

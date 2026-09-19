@@ -34,6 +34,11 @@ import threading
 import time
 import uuid
 
+try:
+    from scripts.translator_reviewed_corrections import load_bound, reviewed_response
+except ModuleNotFoundError:
+    from translator_reviewed_corrections import load_bound, reviewed_response
+
 
 API_KEY = "mihon-fixture-only"
 DEFAULT_SCENARIOS = Path(__file__).parent / "fixtures" / "translation-server-scenarios.json"
@@ -365,13 +370,14 @@ def reviewed_content(page, baseline):
 
 
 class FixtureState:
-    def __init__(self, scenarios, default_scenario, ledger):
+    def __init__(self, scenarios, default_scenario, ledger, review_corrections=None):
         if default_scenario not in scenarios:
             raise ValueError("Unknown default scenario")
         self.scenarios, self.default_scenario, self.ledger = scenarios, default_scenario, ledger
         self.lock, self.counters = threading.Lock(), {}
         self.run_id, self.sequence = uuid.uuid4().hex, 0
         self.review_dispatches = {}
+        self.review_corrections = review_corrections
 
     def record_dispatch(self, scenario, count_only, is_review):
         if is_review and not count_only:
@@ -501,6 +507,14 @@ class FixtureHandler(BaseHTTPRequestHandler):
             pages, ocr = parse_request(body, dialect)
             review = parse_review(body, dialect, pages)
             state = self.server.state
+            authored_review = None
+            if state.review_corrections is not None:
+                if review is None:
+                    raise ProtocolError("bound_corrections_require_review")
+                try:
+                    authored_review = reviewed_response(state.review_corrections, pages[0], review)
+                except (ValueError, KeyError, TypeError):
+                    raise ProtocolError("bound_correction_precondition_failed", 409) from None
             scenario = self.headers.get("X-Mihon-Fixture-Scenario", state.default_scenario)
             count_only = self.path.endswith("/input_tokens")
             request_id, step, rule, sequence = state.allocate(scenario, len(pages), count_only, review is not None)
@@ -534,7 +548,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     headers["Retry-After"] = str(step.get("retry_after_seconds", 1))
             else:
                 selected = pages[:step.get("keep_pages", max(1, (len(pages) + 1) // 2))] if action == "partial" else pages
-                content = json_bytes(reviewed_content(pages[0], review) if review else {"pages": translated_pages(selected, ocr)}).decode()
+                content = json_bytes(authored_review if authored_review is not None else
+                                     reviewed_content(pages[0], review) if review else
+                                     {"pages": translated_pages(selected, ocr)}).decode()
                 if dialect == "responses":
                     output = {"id": request_id, "object": "response", "status": "completed",
                               "output": [{"type": "message", "role": "assistant", "status": "completed",
@@ -577,6 +593,8 @@ def main():
     parser.add_argument("--ledger", type=Path, required=True, help="New private JSONL file; existing files are refused")
     parser.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
     parser.add_argument("--scenario", default="success")
+    parser.add_argument("--review-corrections", type=Path,
+                        help="Opt-in bound, agent-authored synthetic correction bundle; rejects non-review/stale inputs")
     parser.add_argument("--cert", type=Path, help="PEM server certificate, for HTTPS")
     parser.add_argument("--key", type=Path, help="PEM TLS private key, never logged")
     parser.add_argument("--max-request-mib", type=int, default=64)
@@ -592,7 +610,8 @@ def main():
         parser.error("Unknown default scenario")
     ledger = PrivateLedger(args.ledger, args.max_ledger_mib * 1024 * 1024)
     try:
-        state = FixtureState(scenarios, args.scenario, ledger)
+        corrections = load_bound(args.review_corrections) if args.review_corrections else None
+        state = FixtureState(scenarios, args.scenario, ledger, corrections)
         with FixtureServer(args.port, state, args.max_request_mib * 1024 * 1024,
                            args.max_response_mib * 1024 * 1024) as server:
             if args.cert:
