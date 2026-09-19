@@ -4,18 +4,20 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.graphics.Rect
+import android.util.Half
 import ca.mpreg.imagedecoder.ImageDecoder
+import ca.mpreg.webgpuviewer.decodeNextReaderFrame
 import com.davemorrissey.labs.subscaleview.CropBorders
 import com.davemorrissey.labs.subscaleview.provider.InputProvider
+import java.nio.ByteOrder
+import kotlin.math.roundToInt
 
 class Decoder(
     private val cropBorders: Boolean,
 ) : ImageRegionDecoder {
 
     // Pixel data copied into JVM heap memory (RGBA, 4 bytes per pixel).
-    // We copy eagerly because DecodeResult.image is a direct ByteBuffer backed by
-    // native memory that gets g_free'd when the DecodeResult is finalized. Holding
-    // a duplicate() of that buffer would leave us with a dangling pointer after GC.
+    // The native decoder and its encoded image are closed immediately after this copy.
     private var pixels: ByteArray? = null
     private var imageWidth: Int = 0
     private var imageHeight: Int = 0
@@ -42,21 +44,25 @@ class Decoder(
      * dimensions are returned so SSIV lays out tiles against the trimmed size.
      */
     override fun init(context: Context, provider: InputProvider): Point {
-        val decoder = provider.openStream().use { inputStream ->
+        val copy = provider.openStream().use { inputStream ->
             checkNotNull(inputStream) { "InputProvider returned null stream" }
-            ImageDecoder.new(inputStream)
+            ImageDecoder.new(inputStream).use { decoder ->
+                val result = decoder.decodeNextReaderFrame()
+                imageWidth = result.width
+                imageHeight = result.height
+                val buffer = result.image.duplicate().order(ByteOrder.nativeOrder())
+                // Classic tiles are SDR ARGB_8888; decoder 14 may supply extended-sRGB half floats.
+                // Keep the source layout, clamping the SDR rendition instead of reading half bytes as RGBA8.
+                if (result.isHdr) {
+                    ByteArray(Math.multiplyExact(Math.multiplyExact(imageWidth, imageHeight), 4)) {
+                        val sample = Half.toFloat(buffer.short)
+                        (sample.coerceIn(0f, 1f).takeUnless { it.isNaN() }?.times(255f)?.roundToInt() ?: 0).toByte()
+                    }
+                } else {
+                    ByteArray(buffer.remaining()).also { buffer.get(it) }
+                }
+            }
         }
-
-        val result = decoder.decode(page = 0)
-        imageWidth = result.width
-        imageHeight = result.height
-
-        // Copy native pixel data into a JVM ByteArray before the DecodeResult can be
-        // finalized (which would g_free the underlying buffer the ByteBuffer points into).
-        val buf = result.image
-        buf.rewind()
-        val copy = ByteArray(buf.remaining())
-        buf.get(copy)
         pixels = copy
 
         // Default crop rect = full image

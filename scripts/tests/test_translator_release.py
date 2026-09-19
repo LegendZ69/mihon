@@ -360,9 +360,11 @@ class ReservationTests(unittest.TestCase):
         observed["device_validation"] = {
             "status": "passed", "source_sha": record.source_sha, "apk_sha256": "a" * 64,
             "scope": "Focused hash-bound fixture tests", "runs": [
-                {"kind": "k90", "status": "passed", "page_size_bytes": 16384, "tests": 2,
+                {"kind": "k90", "tested_package": "app.mihon.benchmark",
+                 "tested_apk_sha256": "b" * 64, "instrumentation_apk_sha256": "c" * 64, "status": "passed", "page_size_bytes": 16384, "tests": 2,
                  "failures": 0, "errors": 0, "skipped": 0, "recorded_at": "2026-09-20T00:00:00Z"},
-                {"kind": "emulator16k", "status": "passed", "page_size_bytes": 16384, "tests": 2,
+                {"kind": "emulator16k", "tested_package": "app.mihon.benchmark",
+                 "tested_apk_sha256": "b" * 64, "instrumentation_apk_sha256": "c" * 64, "status": "passed", "page_size_bytes": 16384, "tests": 2,
                  "failures": 0, "errors": 0, "skipped": 0, "recorded_at": "2026-09-20T00:00:00Z"},
             ],
         }
@@ -370,24 +372,47 @@ class ReservationTests(unittest.TestCase):
         self.assertIn("Partially tested", title)
         self.assertIn("k90", notes.lower())
         self.assertIn("16 kb emulator", notes.lower())
+        self.assertIn("app.mihon.benchmark", notes)
+        self.assertIn("b" * 64, notes)
+        self.assertIn("c" * 64, notes)
         self.assertIn("pending", notes.lower())
 
     def test_device_receipt_is_source_and_apk_bound_and_rejects_unstructured_content(self):
         record = release.reserve_local(self.repo, "HEAD", self.upstream)
         receipt = {
             "schema": 1, "source_sha": record.source_sha, "apk_sha256": "a" * 64,
-            "runs": [{"kind": "k90", "page_size_bytes": 16384, "status": "passed", "tests": 7,
+            "runs": [{"kind": "k90", "tested_package": "app.mihon.benchmark",
+                 "tested_apk_sha256": "b" * 64, "instrumentation_apk_sha256": "c" * 64, "page_size_bytes": 16384, "status": "passed", "tests": 7,
                       "failures": 0, "errors": 0, "skipped": 0, "recorded_at": "2026-09-20T00:00:00Z"},
-                     {"kind": "emulator16k", "page_size_bytes": 16384, "status": "passed", "tests": 7,
+                     {"kind": "emulator16k", "tested_package": "app.mihon.benchmark",
+                 "tested_apk_sha256": "b" * 64, "instrumentation_apk_sha256": "c" * 64, "page_size_bytes": 16384, "status": "passed", "tests": 7,
                       "failures": 0, "errors": 0, "skipped": 0, "recorded_at": "2026-09-20T00:00:00Z"}],
         }
         result = release.device_summary(receipt, record, "a" * 64)
         self.assertEqual("passed", result["status"])
         self.assertEqual(2, len(result["runs"]))
+        self.assertEqual("a" * 64, result["apk_sha256"])
+        self.assertTrue(all(run["tested_package"] == "app.mihon.benchmark" for run in result["runs"]))
+        self.assertTrue(all(run["tested_apk_sha256"] == "b" * 64 for run in result["runs"]))
+        self.assertTrue(all(run["instrumentation_apk_sha256"] == "c" * 64 for run in result["runs"]))
+        direct = {**receipt, "runs": [
+            {**run, "tested_package": "app.mihon", "tested_apk_sha256": "a" * 64} for run in receipt["runs"]
+        ]}
+        self.assertEqual("passed", release.device_summary(direct, record, "a" * 64)["status"])
+        for field in ("tested_package", "tested_apk_sha256", "instrumentation_apk_sha256"):
+            missing = {**receipt, "runs": [{key: value for key, value in receipt["runs"][0].items() if key != field}]}
+            with self.subTest(missing=field), self.assertRaises(release.ReleaseError):
+                release.device_summary(missing, record, "a" * 64)
         for modified in (
             {**receipt, "source_sha": "b" * 40},
             {**receipt, "apk_sha256": "b" * 64},
             {**receipt, "raw_logs": "never export this"},
+            {**receipt, "runs": [{**receipt["runs"][0], "tested_package": "app.mihon"}]},
+            {**receipt, "runs": [{**receipt["runs"][0], "tested_package": "app.mihon.dev"}]},
+            {**receipt, "runs": [{**receipt["runs"][0], "tested_apk_sha256": "not-a-hash"}]},
+            {**receipt, "runs": [{**receipt["runs"][0], "tested_apk_sha256": "B" * 64}]},
+            {**receipt, "runs": [{**receipt["runs"][0], "instrumentation_apk_sha256": ""}]},
+            {**receipt, "runs": [{**receipt["runs"][0], "instrumentation_apk_sha256": None}]},
             {**receipt, "runs": [{**receipt["runs"][1], "page_size_bytes": 4096}]},
             {**receipt, "runs": [{**receipt["runs"][0], "tests": -1}]},
             {**receipt, "runs": [{**receipt["runs"][0], "failures": 1}]},

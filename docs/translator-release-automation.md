@@ -108,10 +108,21 @@ For a local release with observed focused device tests, optionally add
 `--device-results <private-receipt.json>`. The receipt must contain exactly `schema: 1`,
 `source_sha`, `apk_sha256` and `runs`. Each run contains only `kind` (`k90` or `emulator16k`),
 `page_size_bytes` (4096 or 16384), `status` (`passed`, `failed`, `not_run`), numeric `tests`,
-`failures`, `errors`, `skipped`, and `recorded_at` in `YYYY-MM-DDTHH:MM:SSZ` format.
-Hashes must match this reservation and APK. `emulator16k` requires an observed 16384-byte
-runtime. Unknown fields/free-form logs are rejected. The manifest records these focused
-results while overall acceptance remains pending; the receipt cannot approve human meaning.
+`failures`, `errors`, `skipped`, `recorded_at` in `YYYY-MM-DDTHH:MM:SSZ` format, and these
+required APK identities:
+
+- `tested_package`: exactly `app.mihon` or `app.mihon.benchmark`.
+- `tested_apk_sha256`: the actual installed target APK's lowercase SHA-256 hash.
+- `instrumentation_apk_sha256`: the instrumentation APK's lowercase SHA-256 hash.
+
+The top-level source/hash must match the reservation and released normal `app.mihon` APK.
+A run with `tested_package: app.mihon` must also have that same tested-APK hash. A run targeting
+`app.mihon.benchmark` records the matching minified benchmark companion's own hash; its
+methods provide companion coverage. Release notes and the manifest identify this scope
+explicitly, alongside the instrumentation hash, without attributing companion methods to
+the main package. `emulator16k` requires an observed 16384-byte runtime. Unknown fields,
+missing identities and free-form logs are rejected. Overall acceptance remains pending;
+the receipt cannot approve human meaning.
 
 If building fails, the reservation remains and normal polling does not repeatedly rebuild
 it. Dispatch with `retry_reserved=true` to retry an unpublished reservation. A published

@@ -20,6 +20,8 @@ import androidx.webgpu.GPUTextureDescriptor
 import androidx.webgpu.MapMode
 import androidx.webgpu.TextureFormat
 import androidx.webgpu.TextureUsage
+import ca.mpreg.imagedecoder.ImageDecoder
+import ca.mpreg.webgpuviewer.decodeNextReaderFrame
 import ca.mpreg.webgpuviewer.renderer.Image
 import ca.mpreg.webgpuviewer.renderer.ImageOverlay
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
@@ -369,6 +371,99 @@ class TranslationOverlayRenderingTest {
             }
         } finally {
             decoder.recycle()
+            original.recycle()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun bothNativeReaderPathsRestoreAllExifOrientationsAndOriginalCrop() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val original = Bitmap.createBitmap(128, 96, Bitmap.Config.ARGB_8888)
+        val file = File.createTempFile("translation-exif-all", ".jpg", context.cacheDir)
+        var originalCrop: Rect? = null
+        try {
+            original.eraseColor(Color.WHITE)
+            Canvas(original).drawRect(16f, 24f, 96f, 80f, Paint().apply { color = Color.RED })
+            file.outputStream().use { original.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+            for (orientation in 1..8) {
+                ExifInterface(file.absolutePath).apply {
+                    setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+                    saveAttributes()
+                }
+                val decoder = Decoder(cropBorders = true)
+                try {
+                    decoder.init(context, InputProvider { file.inputStream() })
+                    assertEquals(128, decoder.sourceImageWidth)
+                    assertEquals(96, decoder.sourceImageHeight)
+                    if (originalCrop == null) originalCrop = decoder.sourceCrop
+                    assertEquals("EXIF $orientation original crop", originalCrop, decoder.sourceCrop)
+                } finally {
+                    decoder.recycle()
+                }
+                file.inputStream().use { input ->
+                    ImageDecoder.new(input).use { native ->
+                        val frame = native.decodeNextReaderFrame()
+                        assertEquals("EXIF $orientation width", 128, frame.width)
+                        assertEquals("EXIF $orientation height", 96, frame.height)
+                        val red = (40 * frame.width + 40) * 4
+                        assertTrue(frame.image.get(red).toInt() and 255 > 240)
+                        assertTrue(frame.image.get(red + 1).toInt() and 255 < 20)
+                        val white = (90 * frame.width + 110) * 4
+                        assertTrue(frame.image.get(white + 1).toInt() and 255 > 240)
+                    }
+                }
+            }
+        } finally {
+            original.recycle()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun realGpuNativeExifDecodeKeepsOverlayOnTheOriginalSourcePixels() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val original = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888)
+        val file = File.createTempFile("translation-exif-gpu", ".jpg", context.cacheDir)
+        try {
+            original.eraseColor(Color.WHITE)
+            Canvas(original).drawRect(0f, 0f, 128f, 128f, Paint().apply { color = Color.RED })
+            file.outputStream().use { original.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+            ExifInterface(file.absolutePath).apply {
+                setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_ROTATE_90.toString())
+                saveAttributes()
+            }
+            val page = file.inputStream().use { input ->
+                ImageDecoder.new(input).use { native ->
+                    val frame = native.decodeNextReaderFrame()
+                    ImagePage.ImageSingle(
+                        Image(
+                            frame.image,
+                            frame.width,
+                            frame.height,
+                            createMipMaps = false,
+                            hdr = frame.isHdr,
+                            hdrHeadroom = frame.hdrHeadroom,
+                            gainmap = frame.gainmap,
+                        ),
+                    )
+                }
+            }
+            try {
+                val before = render(page)
+                val red = (62 * 256 + 42) * 4
+                assertTrue(before[red].toInt() and 255 > 240)
+                assertTrue(before[red + 1].toInt() and 255 < 20)
+                page.replaceOverlay(overlay(40f, 60f))
+                assertPixel(Color.WHITE, render(page), 42, 62)
+                page.replaceOverlay(null)
+                val restored = render(page)
+                assertEquals(before[red], restored[red])
+                assertEquals(before[red + 1], restored[red + 1])
+            } finally {
+                page.cleanup()
+            }
+        } finally {
             original.recycle()
             file.delete()
         }

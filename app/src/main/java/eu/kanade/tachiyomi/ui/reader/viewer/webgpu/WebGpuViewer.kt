@@ -16,8 +16,8 @@ import androidx.webgpu.GPUTexture
 import ca.mpreg.imagedecoder.ImageDecoder
 import ca.mpreg.webgpuviewer.ImageView
 import ca.mpreg.webgpuviewer.closeTo
+import ca.mpreg.webgpuviewer.decodeNextReaderFrame
 import ca.mpreg.webgpuviewer.draw.TextAlign
-import ca.mpreg.webgpuviewer.renderer.GainmapInput
 import ca.mpreg.webgpuviewer.renderer.Image
 import ca.mpreg.webgpuviewer.transition.TransitionBasic
 import ca.mpreg.webgpuviewer.transition.TransitionCube
@@ -1137,22 +1137,6 @@ open class WebGpuViewer(
                 }
             }
 
-            // The decoder hands the map over unapplied - see ImageDecoder.Gainmap - because how
-            // much of it to use depends on the display, so the viewer applies it.
-            fun ImageDecoder.DecodeResult.gainmapInput(): GainmapInput? = gainmap?.let {
-                GainmapInput(
-                    pixels = it.pixels,
-                    width = it.width,
-                    height = it.height,
-                    channels = it.channels,
-                    gamma = it.gamma,
-                    minContentBoost = it.minContentBoost,
-                    maxContentBoost = it.maxContentBoost,
-                    offsetSdr = it.offsetSdr,
-                    offsetHdr = it.offsetHdr,
-                )
-            }
-
             ImageDecoder.new(input).use { dec ->
                 if (isDualPageMode()) {
                     page.taggedSpreadPosition = when (dec.getTag("PageName")) {
@@ -1169,7 +1153,7 @@ open class WebGpuViewer(
 
                 val backgroundColor = if (config.automaticBackground) null else readerBackgroundColor()
 
-                val firstFrame = dec.decodeNext()
+                val firstFrame = dec.decodeNextReaderFrame()
 
                 val imagePage = if (pageCount == 1) {
                     // Only trim when not animated and not in dual page mode
@@ -1192,7 +1176,7 @@ open class WebGpuViewer(
                         backgroundColor = backgroundColor,
                         hdr = firstFrame.isHdr,
                         hdrHeadroom = firstFrame.hdrHeadroom,
-                        gainmap = firstFrame.gainmapInput(),
+                        gainmap = firstFrame.gainmap,
                     )
 
                     ImagePage.ImageSingle(firstImage)
@@ -1212,7 +1196,7 @@ open class WebGpuViewer(
                         backgroundColor = backgroundColor,
                         hdr = firstFrame.isHdr,
                         hdrHeadroom = firstFrame.hdrHeadroom,
-                        gainmap = firstFrame.gainmapInput(),
+                        gainmap = firstFrame.gainmap,
                     )
 
                     frames.add(Pair(firstImage, firstFrame.duration))
@@ -1234,7 +1218,7 @@ open class WebGpuViewer(
                                 return
                             }
 
-                            val frame = dec.decodeNext()
+                            val frame = dec.decodeNextReaderFrame()
                             val image = Image(
                                 frame.image,
                                 frame.width,
@@ -1243,7 +1227,7 @@ open class WebGpuViewer(
                                 backgroundColor = firstImage.backgroundColor,
                                 hdr = frame.isHdr,
                                 hdrHeadroom = frame.hdrHeadroom,
-                                gainmap = frame.gainmapInput(),
+                                gainmap = frame.gainmap,
                             )
                             frames.add(Pair(image, frame.duration))
                         }

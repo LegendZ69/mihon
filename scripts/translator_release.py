@@ -302,12 +302,20 @@ def device_summary(value: dict, record: Reservation, apk_digest: str) -> dict:
             value["schema"] != 1 or value["source_sha"] != record.source_sha or value["apk_sha256"] != apk_digest):
         raise ReleaseError("Device receipt must identify this exact source and APK hash")
     runs = value["runs"]
-    fields = {"kind", "page_size_bytes", "status", "tests", "failures", "errors", "skipped", "recorded_at"}
+    fields = {"kind", "page_size_bytes", "status", "tests", "failures", "errors", "skipped", "recorded_at",
+              "tested_package", "tested_apk_sha256", "instrumentation_apk_sha256"}
     if not isinstance(runs, list) or not 1 <= len(runs) <= 32:
         raise ReleaseError("Device receipt must contain 1–32 bounded test runs")
     for run in runs:
         if not isinstance(run, dict) or set(run) != fields:
             raise ReleaseError("Device receipt cannot include unstructured content")
+        if not isinstance(run["tested_package"], str) or run["tested_package"] not in {"app.mihon", "app.mihon.benchmark"}:
+            raise ReleaseError("Device run must identify the released app or its benchmark companion")
+        for field in ("tested_apk_sha256", "instrumentation_apk_sha256"):
+            if not isinstance(run[field], str) or not re.fullmatch(r"[0-9a-f]{64}", run[field]):
+                raise ReleaseError("Device run requires exact lowercase SHA-256 hashes for both tested and instrumentation APKs")
+        if run["tested_package"] == "app.mihon" and run["tested_apk_sha256"] != apk_digest:
+            raise ReleaseError("A directly instrumented main APK must match the released artifact hash")
         if run["kind"] not in {"k90", "emulator16k"} or run["status"] not in {"passed", "failed", "not_run"}:
             raise ReleaseError("Invalid device validation kind/status")
         if type(run["page_size_bytes"]) is not int or run["page_size_bytes"] not in {4096, 16384}:
@@ -331,7 +339,10 @@ def device_summary(value: dict, record: Reservation, apk_digest: str) -> dict:
     failed = any(run["status"] == "failed" for run in runs)
     passed_kinds = {run["kind"] for run in runs if run["status"] == "passed"}
     status = "failed" if failed else ("passed" if passed_kinds == {"k90", "emulator16k"} else "partial")
-    return {"status": status, "scope": "Only the focused test runs in the supplied hash-bound receipt",
+    return {"status": status,
+            "scope": "Focused native tests apply to each listed tested package/APK and instrumentation APK. "
+                     "The top-level apk_sha256 identifies the released app.mihon artifact. "
+                     "app.mihon.benchmark entries cover the minified benchmark companion.",
             "source_sha": record.source_sha, "apk_sha256": apk_digest, "runs": runs}
 
 
@@ -605,11 +616,16 @@ def release_description(record: Reservation, validation: dict) -> tuple[str, str
         status = status if status in {"passed", "failed", "not_run"} else "unavailable"
         lines.append(f"{name}: {status.replace('_', ' ')}.")
     if runs:
-        lines.append("Focused device results below are supplied for this exact source and APK hash:")
+        lines.append(f"Released app.mihon artifact SHA-256: `{device['apk_sha256']}`. "
+                     "The focused native results below identify the actual package and APKs used for each run. "
+                     "app.mihon.benchmark entries cover the minified benchmark companion; "
+                     "app.mihon entries cover the released application.")
         for run in runs:
             name = "K90" if run.get("kind") == "k90" else "16 KB emulator"
             lines.append(f"- {name}: {run['status']}; {run['tests']} tests, {run['failures']} failures, "
-                         f"{run['errors']} errors, {run['skipped']} skipped; kernel page size {run['page_size_bytes']} bytes.")
+                         f"{run['errors']} errors, {run['skipped']} skipped; kernel page size {run['page_size_bytes']} bytes. "
+                         f"Tested package: `{run['tested_package']}`. Tested APK SHA-256: `{run['tested_apk_sha256']}`. "
+                         f"Instrumentation APK SHA-256: `{run['instrumentation_apk_sha256']}`.")
         lines.append("These focused results do not establish full visual, performance or human meaning acceptance.")
     else:
         lines.append("No hash-bound device test results are recorded for this artifact.")

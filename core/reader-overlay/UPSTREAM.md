@@ -43,3 +43,25 @@ Source: https://jitpack.io/com/github/mihonapp/subsampling-scale-image-view/9491
 SHA-256: `af99ab23a39fd74f2911ae860afd515320e614cf7f712a41116edbd45b04e3c1`.
 Its original crop JNI/resource artifacts are retained. Local changes expose the
 exact decoder crop rectangle to align overlays with asymmetric border cropping.
+
+`ReaderImageDecoder.kt` adapts `ca.mpreg:imagedecoder:14` to the established raw
+source-coordinate contract in both readers. The official decoder now applies
+EXIF orientation unconditionally in `nativeDecode`/`apply_orientation`, including
+the gainmap, and exposes no orientation opt-out. Its `getTag("Orientation")`
+returns the original numeric EXIF value. The adapter undoes that pixel permutation
+before cropping or GPU upload, preserving all RGBA8/RGBA16F and gainmap bytes;
+normal orientation reuses the buffer without a pixel allocation. Checked buffer
+dimensions bound any required copy to the existing decoded frame size. The
+classic decoder closes its native encoded-image owner with `use` and converts
+half-float extended-sRGB samples to its existing SDR ARGB_8888 tile format.
+Decoder 14 output buffers are Java-owned direct buffers, independent of that
+close operation. No dependency or native binary is added by this adaptation.
+
+Verified on 2026-09-20 against the
+[v14 Kotlin source artifact](https://repo.maven.apache.org/maven2/ca/mpreg/imagedecoder/14/imagedecoder-14-sources.jar)
+and [native implementation](https://github.com/mpreg-ca/imagedecoder/blob/260e71ca07a330962d0b696bc6109861d8cbaaa1/library/src/main/cpp/imagedecoder/imagedecoder.cpp).
+Regressions retain the raw-coordinate JPEG assertion and add all eight EXIF
+orientations, asymmetric crop consistency, byte-exact half-float/gainmap
+permutations, and native decode → GPU overlay readback. `getTag` describes the
+main image; per-frame differing orientations in multipage TIFF are not covered
+by these static-image checks.
