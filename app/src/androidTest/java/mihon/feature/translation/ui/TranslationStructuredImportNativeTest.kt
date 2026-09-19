@@ -103,7 +103,7 @@ class TranslationStructuredImportNativeTest {
                 await("Stage controls are visible") { text("Geometry correction") && text("Quality review") }
                 reveal("Custom replacement") { actions("Custom replacement").isNotEmpty() }
                 val custom = actions("Custom replacement").first()
-                assertTrue(custom.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                assertTrue(performTargetAction(custom, AccessibilityNodeInfo.ACTION_CLICK))
                 reveal("System task wording") { editors("System task wording").isNotEmpty() }
                 val valid = "Native validation: preserve dialogue and use {{target_language}}."
                 setPrompt(valid)
@@ -255,7 +255,8 @@ class TranslationStructuredImportNativeTest {
         reveal(label) { editors(label).isNotEmpty() }
         val editor = editors(label).single()
         assertTrue(
-            editor.performAction(
+            performTargetAction(
+                editor,
                 AccessibilityNodeInfo.ACTION_SET_TEXT,
                 Bundle().apply {
                     putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
@@ -286,13 +287,40 @@ class TranslationStructuredImportNativeTest {
         }
     }
 
-    private fun nodes(): List<AccessibilityNodeInfo> = buildList {
+    /** Null is normal while a dialog attaches/detaches; another app is never a valid input target. */
+    private fun focusedTargetRoot(): AccessibilityNodeInfo? {
+        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return null
+        if (!root.refresh()) return null
+        val packageName = root.packageName?.toString() ?: return null
+        assertEquals("Refuse to interact with a different app", context.packageName, packageName)
+        return root.takeIf { it.window?.isFocused == true }
+    }
+
+    private fun awaitFocusedTargetRoot(label: String, deadline: Long): AccessibilityNodeInfo {
+        do {
+            focusedTargetRoot()?.let { return it }
+            SystemClock.sleep(40)
+        } while (SystemClock.uptimeMillis() < deadline)
+        throw AssertionError("No focused ${context.packageName} accessibility root while revealing '$label'")
+    }
+
+    private fun performTargetAction(node: AccessibilityNodeInfo, action: Int, arguments: Bundle? = null): Boolean {
+        val root = focusedTargetRoot() ?: return false
+        if (!node.refresh() || node.packageName?.toString() != context.packageName ||
+            node.windowId != root.windowId || node.window?.isFocused != true
+        ) {
+            return false
+        }
+        return node.performAction(action, arguments)
+    }
+
+    private fun nodes(root: AccessibilityNodeInfo? = focusedTargetRoot()): List<AccessibilityNodeInfo> = buildList {
         fun visit(node: AccessibilityNodeInfo?) {
             if (node == null || size >= 512) return
             add(node)
             for (index in 0 until node.childCount) visit(node.getChild(index))
         }
-        visit(instrumentation.uiAutomation.rootInActiveWindow)
+        visit(root)
     }
 
     private fun labelled(node: AccessibilityNodeInfo, label: String): Boolean =
@@ -335,7 +363,7 @@ class TranslationStructuredImportNativeTest {
                     node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
                 ) {
                     attempts++
-                    if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
+                    if (performTargetAction(node, AccessibilityNodeInfo.ACTION_CLICK)) return
                 }
             }
             SystemClock.sleep(40)
@@ -346,16 +374,19 @@ class TranslationStructuredImportNativeTest {
     /** Scroll only the focused app's observed vertical surface, with a fixed bound on attempts. */
     private fun reveal(label: String, visible: () -> Boolean) {
         instrumentation.waitForIdleSync()
+        val deadline = SystemClock.uptimeMillis() + 10_000
         repeat(16) { attempt ->
+            val root = awaitFocusedTargetRoot(label, minOf(deadline, SystemClock.uptimeMillis() + 5_000))
             if (visible()) return
-            assertEquals(context.packageName, instrumentation.uiAutomation.rootInActiveWindow?.packageName?.toString())
-            val observed = nodes()
+            val observed = nodes(root)
             val named = observed.lastOrNull {
                 labelled(it, label) && it.actionList.any { action ->
                     action.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id
                 }
             }
-            if (named?.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id) != true) {
+            if (named == null ||
+                !performTargetAction(named, AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
+            ) {
                 val direction = if (attempt <
                     8
                 ) {
@@ -381,7 +412,7 @@ class TranslationStructuredImportNativeTest {
                         action.id == verticalDirection
                     }
                 } ?: candidates.firstOrNull()
-                if (vertical == null || !vertical.performAction(direction)) {
+                if (vertical == null || !performTargetAction(vertical, direction)) {
                     // A newly composed screen may not have published its lazy children yet.
                     SystemClock.sleep(100)
                 }
