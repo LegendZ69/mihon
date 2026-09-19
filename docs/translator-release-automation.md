@@ -132,6 +132,11 @@ then resumes publication without signing, rebuilding or repackaging. Matching up
 are skipped; only missing assets are uploaded. The earliest bundle is authoritative, including
 when an expired bundle makes recovery unavailable. A draft with assets but no preserved bundle
 fails closed. For a locally preserved bundle, `publish` resumes the same exact bytes directly.
+GitHub's release-by-tag lookup may return 404 for an existing draft. Release inspection then
+checks authenticated, paginated release listings for the exact tag; malformed/duplicate identities
+or failed lookups stop publication rather than assuming absence. This recovery was exercised on
+the initial v15 draft without replacing its APK or source bundle.
+
 CI preserves the original bundle before publication for 90 days. An expired/missing original
 bundle with prior assets requires a new reviewed source/version, not moving the old tag.
 

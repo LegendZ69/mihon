@@ -2,6 +2,14 @@
 
 This continuation starts from the verified v14 build documented in [the controls validation report](translator-controls-validation-2026-09-12.md). It adds local structured-file imports and stage-specific prompt replacement. Prior Japanese physical-orientation, unmatched WebGPU measurements, spoken TalkBack and human passage approval remain open. No result in this report resolves those earlier gaps.
 
+## Later upstream-integrated release checkpoint — 20 September
+
+The [v15 release validation report](translator-release-validation-2026-09-20.md) supersedes the provisional final-device status below while retaining every earlier failure. Published v15 uses source `b2fe5ccbf755bda06905412e1105763b14caf63b`, normal APK `7c595c9eaf4967cbb2d873bcfbbc78139022d26cf05ad24fd535e73acb07fe4b`, and upstream `504ec2afaea49cf8bb8dab03164f2feca8ffb3b6`. It is **Partially tested**, not validated.
+
+The full host suite passed 478 tests (332 app, 138 domain, 3 core/common, 5 OCR), formatting and migration verification. The final minified benchmark companion passed 39/39 methods on the actual 16384-byte emulator and 38/39 on K90. K90's native prompt-editor lookup failed, including isolated reruns, despite a diagnostic screenshot showing the System editor. The latest K90 prompt-autosave check remains open; its cause is not established. All SQLite, import, EXIF, Canvas/GPU and populated-queue methods in the final matrix passed. Exact target/instrumentation hashes and scope are in the linked report; companion tests are not attributed to the normal APK.
+
+Both reader backends have bounded normal-app comparison evidence; full matched performance and human passage approval remain open. No paid provider calls were added. The original 319/138 host counts below describe their earlier checkpoint, not this full integrated run.
+
 ## Implemented boundaries
 
 Structured files is available globally and per series. Portable JSON and Gemini, OpenAI Responses and Chat Completions envelopes are decoded locally; Mihon ZIP archives use the existing archive restoration path. The import UI separates files, explicit matching, validation/conflicts and committing selected valid pages. Hash/dimension matching is automatic; IDs without hashes require an explicit original-page selection. Provider geometry uses normalized coordinates and portable JSON uses original pixels. Recorded tile transforms are required. Text-only imports update explicitly matched existing region IDs while preserving their geometry and OCR.
