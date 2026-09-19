@@ -1,4 +1,4 @@
-# Translator v15: upstream synchronization and release validation
+# Translator releases: upstream synchronization and validation
 
 Validation checkpoint: 20 September 2026. **Published as Partially tested; one K90 native UI failure remains unresolved.** This report preserves the decoder and populated-queue regressions, their fixes, and later test-only harness timing failures. Both reader smoke checks passed on `943464a5b`; source `b2fe5ccbf` has a completed minified build, an emulator 39/39 pass and a retained K90 38/39 result. Earlier failures remain evidence. Japanese AI orientation, final WebGPU performance measurements, spoken TalkBack and human passage approval remain open. No paid provider calls were made in this phase; existing uncertain reservations and the S$270 dispatch stop/S$300 cumulative ceiling remain unchanged.
 
@@ -15,7 +15,7 @@ Validation checkpoint: 20 September 2026. **Published as Partially tested; one K
 | Populated-queue/settings gesture preference fix | `e4f8dd8e30e69dd4b8eadd7d2157d3e06f9bbd0f`; manual normal-app reader-to-queue navigation passed |
 | Native dialog-harness refinement | `943464a5bfa91b6d15ce8789897495448014b915`; normal reader checks completed, emulator transition-timing failure retained |
 | Final native window-transition harness refinement | `b2fe5ccbf755bda06905412e1105763b14caf63b`; test-only centralized focused-root waiting, reconciled build completed |
-| `main` mirror at this checkpoint | Exactly upstream `504ec2afaea49cf8bb8dab03164f2feca8ffb3b6` |
+| `main` mirror at v15 publication | Exactly upstream `504ec2afaea49cf8bb8dab03164f2feca8ffb3b6`; later integrations are recorded below |
 | Reserved and pushed annotated tag | `translator-v15`, bound to source `b2fe5ccbf755bda06905412e1105763b14caf63b` and upstream `504ec2afaea49cf8bb8dab03164f2feca8ffb3b6`; v15 is published without changing this source |
 | Reconciled normal APK SHA-256 on `b2fe5ccbf` | `7c595c9eaf4967cbb2d873bcfbbc78139022d26cf05ad24fd535e73acb07fe4b`; installed hash verified |
 | Reconciled benchmark APK SHA-256 on `b2fe5ccbf` | `ec06c329e07ad7fce5f83c059c667076cae718bfce9cc760287904658fd3bb49` |
@@ -198,6 +198,55 @@ Before that tooling push, concurrent manual runs [35459679141](https://github.co
 
 The v16 failure exposed another release-tool compatibility defect: the signer parser expected `Signer #1`, but official Android Build Tools 37 prints `V2 Signer:`. The downloaded Linux package was verified against Google's repository size and SHA-1 (`70954e99f4c3d9d46ee70fa32624672fe7cd6ebe`). Its portable `apksigner.jar` successfully verifies the unchanged published v15 APK and prints the preserved certificate, while the old parser rejects that same output. This is a reproduced parser rejection; the discarded v16 CI APK itself was not retained for independent certificate inspection. A synthetic local `signingReport` selected its supplied disposable key; no Gradle signing change was made from that diagnostic. Both disposable keystore files were deleted. The corrected parser accepts that captured SDK 37 output, requires exactly one reported signer, and checks every recognized APK certificate against the preserved identity. Unknown/malformed/extra identities and source-stamp-only output are rejected. All 28 release-control tests pass. The corrected subsequent CI publication is tracked separately.
 
+### V17: verified CI bundle and interrupted-publication recovery
+
+The SDK 37 signer fix is source `e28e0af755e42702c2b383910e250c027c9e32bd`.
+[Initial CI run 35460948758](https://github.com/LegendZ69/mihon/actions/runs/35460948758)
+passed host checks, normal minified compilation, signature/identity checks and packaging.
+It preserved Actions artifact `10589794452`, digest
+`8d07c6d201c92f5e0fdc7a79fd3a4c1fc84b333edc0c9972f4b8d9a637ccbd20`,
+before creating an empty draft. Immediate tag/list inspection did not find that new draft,
+so publication stopped. This failure remains distinct from the corrected v16 signer parser.
+
+[Explicit retry 35461604141](https://github.com/LegendZ69/mihon/actions/runs/35461604141)
+**passed**: it restored the preserved bundle and skipped JDK setup, signing, Gradle checks,
+compilation and repackaging. It published the five original assets as
+[Translator v17](https://github.com/LegendZ69/mihon/releases/tag/translator-v17).
+No APK was rebuilt or replaced. The later successful lookup demonstrates recoverability;
+it does not explain the transient visibility behavior inside GitHub.
+
+| V17 artifact | Independently downloaded SHA-256 |
+| --- | --- |
+| ARM64 APK | `f1cfd341ff0ca8a54a969785e5338ee9380eae5b50adc1140d0cf5dd9cff3301` |
+| Full source ZIP | `445320f5b8a019ad768d2cf881a7a3613c06afe959efea9ed4645f65757c80f3` |
+| Manifest | `e9f8b36f3cbff607b33e32c571034b940a0b9c03c6d77309edec9bdcbc0f713b` |
+| Validation | `d1355a717441cc17c5ea23cbae6e0bee495079a0f4edc153f8e5e3835365e202` |
+| SHA256SUMS | `d0e3efcade53498600d76e0dec49751f29c92d76e3ebffd916a35f9eeb70d826` |
+
+All assets match GitHub digests, the manifest and bundled checksums. All **1,882 source
+files** were verified against the tagged Git blobs, accounting only for the declared
+`.idea/icon.svg` CRLF conversion in `.gitattributes`. The public APK independently passes
+SDK 37 signature verification with the preserved certificate, ARM64/package/version
+checks and 16 KB ZIP alignment. It embeds `0.20.4-translator.17` / **100017** and source
+`e28e0af755e42702c2b383910e250c027c9e32bd`, incorporating upstream `504ec2af`.
+Its validation summary records **470 passing app/domain tests**; other host module counts
+were not supplied to that summary. Device checks on this exact CI artifact are **not run**.
+V15 remains installed on the K90; its device evidence is not attributed to v17. Neither
+prerelease is a validated release.
+
+The first-publication regression was reproduced before a focused correction. New drafts
+now use the authoritative REST creation response, validating identity and flags before
+upload. Malformed responses and ambiguous transport failures stop without blind retries;
+a subsequent run recovers the existing draft and original bundle. All **31 release-control
+tests** pass, including first publication with persistently stale tag/list reads and interrupted
+creation followed by restart. Hosted first-attempt publication remains pending for that change.
+
+Upstream then
+advanced to tracker-profile refresh commit `01e3f8c60557d89b6cd9d28c11f41d676d0ab5d9`;
+`main` has been fast-forwarded and translator merge
+`cd45ca46d5677064d0f9028124f1bba60276c34f` completed without conflict.
+The next release will identify this integration and its own validation scope.
+
 Public assets comprise the normal ARM64 APK, full tracked-source `git archive`, SHA-256 checksums, manifest and sanitized aggregate validation. Credentials and private raw logs/API captures are excluded. Release titles distinguish **Untested** from **Partially tested**; neither label implies overall acceptance. This v15 prerelease is **Partially tested**, with the final device aggregate explicitly **failed** because the K90 prompt method remains unresolved. Its publication does not mark the build validated or close that acceptance gap.
 
 | Delivery check | Outcome |
@@ -208,7 +257,7 @@ Public assets comprise the normal ARM64 APK, full tracked-source `git archive`, 
 | GitHub release publication | **PUBLISHED** — [v15](https://github.com/LegendZ69/mihon/releases/tag/translator-v15); the same empty draft was resumed with the original bundle after the retained HTTP 404 failure |
 | Automation enabled after publication | **PASS — true**, after published v15 asset verification |
 | Observed unchanged-source no-op and serialization | **PASS** — actual runs `35459679141` and `35459680627`, both successful with build skipped; sequential timings above, no new tag or asset overwrite |
-| Later tooling release | **V16 FAILED / NOT PUBLISHED** — host checks and compilation passed; SDK 37 signer-output parsing failed during packaging. Corrected subsequent release pending; v15 remains unchanged |
+| Later tooling releases | **V16 FAILED / NOT PUBLISHED** — immutable consumed reservation. **V17 PUBLISHED** from its preserved verified CI bundle; all five downloaded assets independently verified; v15 remains unchanged |
 | Current settings checks | **UI-verified:** controlled-series chapter-ahead 5, automatic translation off, Ignore SFX on; benchmark Battery saver (recommended), autostart off and notifications off |
 | Main high-quality renderer restoration | **PASS — restored on**, explicit WebGPU smoke completed; current backend WebGPU, reader page 7 restored |
 | Final post-validation settings check and owned fixture cleanup | **PASS within recorded scope** — settings/signing/hash restoration verified; 13 owned run archives verified before exact UUID directories were removed; both owned external fixture roots absent; reverse mappings empty; owned emulator stopped; main app foreground restored |

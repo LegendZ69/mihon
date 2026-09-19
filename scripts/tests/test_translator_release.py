@@ -397,7 +397,7 @@ class ReservationTests(unittest.TestCase):
         local = release.verify_bundle(self.repo, record, output)
         names = sorted(local)
         tag_object = git(self.repo, "rev-parse", record.tag)
-        for existing_names in (names[:1], names):
+        for existing_names in ([], names[:1], names):
             uploaded = []
             edited = []
             draft = {"id": 15, "tag_name": record.tag, "draft": True, "prerelease": True,
@@ -433,6 +433,162 @@ class ReservationTests(unittest.TestCase):
             self.assertEqual(sorted(set(names) - set(existing_names)), sorted(uploaded))
             self.assertEqual([record.tag], edited)
             self.assertEqual(local, release.verify_bundle(self.repo, record, output))
+
+    def test_first_publish_uses_create_response_when_new_draft_is_not_yet_listed(self):
+        record = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        apk.write_bytes(b"verified-synthetic-release-apk")
+        output = self.repo / "original-bundle"
+        validation = release.validation_summary([], "passed", "passed", "passed", "2026-09-20T00:00:00Z")
+        release.bundle(self.repo, record, apk, output,
+                       {"version_code": record.version_code, "certificate_sha256": release.CERT}, validation)
+        local = release.verify_bundle(self.repo, record, output)
+        draft = {"id": 17, "tag_name": record.tag, "draft": True, "prerelease": True, "assets": []}
+        tag_object = git(self.repo, "rev-parse", record.tag)
+        created = []
+        uploaded = []
+        published = []
+
+        def client(repo, *args, **kwargs):
+            if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases/tags/{record.tag}"):
+                return subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+            if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases?per_page=100"):
+                # Listing remains stale throughout this invocation, including after creation.
+                return subprocess.CompletedProcess([], 0, "[[]]", "")
+            if args[:2] == ("release", "create"):
+                created.append("legacy")
+                return subprocess.CompletedProcess([], 0, "https://github.com/fixture/draft", "")
+            if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases"):
+                self.assertEqual("POST", args[args.index("--method") + 1])
+                payload = json.loads(Path(args[args.index("--input") + 1]).read_text())
+                self.assertEqual(record.tag, payload["tag_name"])
+                self.assertEqual(record.source_sha, payload["target_commitish"])
+                self.assertIs(payload["draft"], True)
+                self.assertIs(payload["prerelease"], True)
+                self.assertIn(record.source_sha, payload["body"])
+                created.append("authoritative")
+                return subprocess.CompletedProcess([], 0, json.dumps(draft), "")
+            if args[:2] == ("release", "upload"):
+                self.assertEqual(record.tag, args[2])
+                path = Path(args[3])
+                self.assertEqual(local[path.name], release.sha256(path))
+                self.assertNotIn("--clobber", args)
+                uploaded.append(path.name)
+                return subprocess.CompletedProcess([], 0, "", "")
+            if args[:2] == ("release", "edit"):
+                self.assertEqual(record.tag, args[2])
+                self.assertIn("--draft=false", args)
+                published.append(record.tag)
+                return subprocess.CompletedProcess([], 0, "", "")
+            self.fail(f"Unexpected remote action: {args[:2]}")
+
+        def remote(repo, name, ref):
+            return record.source_sha if ref.endswith("^{}") else tag_object
+
+        with patch.object(release, "gh", side_effect=client), \
+                patch.object(release, "remote_sha", side_effect=remote), \
+                patch.object(release, "remote_heads_current", return_value=True):
+            self.assertEqual("published", release.publish(self.repo, record, output))
+        self.assertEqual(["authoritative"], created)
+        self.assertEqual(sorted(local), sorted(uploaded))
+        self.assertEqual([record.tag], published)
+        self.assertEqual(local, release.verify_bundle(self.repo, record, output))
+
+    def test_first_publish_rejects_invalid_or_unconfirmed_create_response_before_upload(self):
+        record = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        apk.write_bytes(b"verified-synthetic-release-apk")
+        output = self.repo / "original-bundle"
+        validation = release.validation_summary([], "passed", "passed", "passed", "2026-09-20T00:00:00Z")
+        release.bundle(self.repo, record, apk, output,
+                       {"version_code": record.version_code, "certificate_sha256": release.CERT}, validation)
+        local = release.verify_bundle(self.repo, record, output)
+        tag_object = git(self.repo, "rev-parse", record.tag)
+        draft = {"id": 17, "tag_name": record.tag, "draft": True, "prerelease": True, "assets": []}
+        bodies = ["{", "null", "[]"]
+        for changes in ({"id": 0}, {"id": True}, {"tag_name": "translator-v150"},
+                        {"draft": False}, {"draft": "true"}, {"prerelease": False},
+                        {"assets": None}, {"assets": [None]}):
+            bodies.append(json.dumps({**draft, **changes}))
+        responses = [subprocess.CompletedProcess([], 0, body, "") for body in bodies]
+        responses.extend(subprocess.CompletedProcess([], 1, "private-provider-body", f"HTTP {status} private-token")
+                         for status in (401, 403, 409, 422, 502))
+        for response in responses:
+            creations = []
+
+            def client(repo, *args, **kwargs):
+                if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases/tags/{record.tag}"):
+                    return subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+                if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases?per_page=100"):
+                    return subprocess.CompletedProcess([], 0, "[[]]", "")
+                if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases"):
+                    creations.append(args)
+                    return response
+                self.fail(f"Invalid create response must not dispatch another action: {args[:2]}")
+
+            def remote(repo, name, ref):
+                return record.source_sha if ref.endswith("^{}") else tag_object
+
+            with self.subTest(response=response), patch.object(release, "gh", side_effect=client), \
+                    patch.object(release, "remote_sha", side_effect=remote), \
+                    patch.object(release, "remote_heads_current", return_value=True):
+                with self.assertRaises(release.ReleaseError) as failure:
+                    release.publish(self.repo, record, output)
+            self.assertEqual(1, len(creations))
+            self.assertNotIn("private-token", str(failure.exception))
+            self.assertNotIn("private-provider-body", str(failure.exception))
+            self.assertEqual(local, release.verify_bundle(self.repo, record, output))
+
+    def test_publish_restart_recovers_draft_after_ambiguous_create_without_second_create(self):
+        record = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        apk.write_bytes(b"verified-synthetic-release-apk")
+        output = self.repo / "original-bundle"
+        validation = release.validation_summary([], "passed", "passed", "passed", "2026-09-20T00:00:00Z")
+        release.bundle(self.repo, record, apk, output,
+                       {"version_code": record.version_code, "certificate_sha256": release.CERT}, validation)
+        local = release.verify_bundle(self.repo, record, output)
+        tag_object = git(self.repo, "rev-parse", record.tag)
+        draft = {"id": 17, "tag_name": record.tag, "draft": True, "prerelease": True, "assets": []}
+        creations = []
+        uploaded = []
+        edits = []
+
+        def client(repo, *args, **kwargs):
+            if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases/tags/{record.tag}"):
+                return subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+            if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases?per_page=100"):
+                return subprocess.CompletedProcess([], 0, json.dumps([[draft]] if creations else [[]]), "")
+            if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases"):
+                creations.append(args)
+                # GitHub persisted the draft, but the transport did not return its response.
+                return subprocess.CompletedProcess([], 1, "", "connection interrupted")
+            if args[:2] == ("release", "upload"):
+                path = Path(args[3])
+                self.assertEqual(local[path.name], release.sha256(path))
+                self.assertNotIn("--clobber", args)
+                uploaded.append(path.name)
+                return subprocess.CompletedProcess([], 0, "", "")
+            if args[:2] == ("release", "edit"):
+                edits.append(args)
+                return subprocess.CompletedProcess([], 0, "", "")
+            self.fail(f"Unexpected remote action: {args[:2]}")
+
+        def remote(repo, name, ref):
+            return record.source_sha if ref.endswith("^{}") else tag_object
+
+        with patch.object(release, "gh", side_effect=client), \
+                patch.object(release, "remote_sha", side_effect=remote), \
+                patch.object(release, "remote_heads_current", return_value=True):
+            with self.assertRaises(release.ReleaseError):
+                release.publish(self.repo, record, output)
+            self.assertEqual([], uploaded)
+            self.assertEqual([], edits)
+            self.assertEqual("published", release.publish(self.repo, record, output))
+        self.assertEqual(1, len(creations))
+        self.assertEqual(sorted(local), sorted(uploaded))
+        self.assertEqual(1, len(edits))
+        self.assertEqual(local, release.verify_bundle(self.repo, record, output))
 
     def test_blocked_sync_comment_is_deduplicated_for_same_source_and_upstream(self):
         marker = release.blocked_sync_marker(self.upstream, "a" * 40)

@@ -139,7 +139,12 @@ fails closed. For a locally preserved bundle, `publish` resumes the same exact b
 GitHub's release-by-tag lookup may return 404 for an existing draft. Release inspection then
 checks authenticated, paginated release listings for the exact tag; malformed/duplicate identities
 or failed lookups stop publication rather than assuming absence. This recovery was exercised on
-the initial v15 draft without replacing its APK or source bundle.
+the initial v15 draft and on the v17 Actions retry without replacing either APK or source
+bundle. Creating a new draft uses the authoritative REST creation response directly; it
+validates the returned release ID, exact tag, draft/prerelease flags and asset list before
+uploading. It does not depend on immediately discovering that new draft through a separate
+tag/list lookup. A failed or ambiguous creation is not blindly repeated; a later explicit
+retry follows the existing draft-discovery path.
 
 CI preserves the original bundle before publication for 90 days. An expired/missing original
 bundle with prior assets requires a new reviewed source/version, not moving the old tag.

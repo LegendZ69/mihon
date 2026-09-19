@@ -150,24 +150,26 @@ def gh(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProces
     return command(repo, "gh", *args, check=check)
 
 
+def _validate_release_metadata(value: object) -> dict:
+    if not isinstance(value, dict) or type(value.get("id")) is not int or value["id"] <= 0:
+        raise ReleaseError("GitHub returned an invalid release identity")
+    if not isinstance(value.get("tag_name"), str) or not value["tag_name"]:
+        raise ReleaseError("GitHub returned an invalid release tag")
+    if type(value.get("draft")) is not bool or type(value.get("prerelease")) is not bool:
+        raise ReleaseError("GitHub returned invalid release publication flags")
+    if not isinstance(value.get("assets"), list) or any(not isinstance(asset, dict) for asset in value["assets"]):
+        raise ReleaseError("GitHub returned invalid release assets")
+    return value
+
+
+def _decode_release_json(body: str) -> object:
+    try:
+        return json.loads(body)
+    except ValueError as error:
+        raise ReleaseError("GitHub returned malformed release metadata") from error
+
+
 def release_metadata(repo: Path, tag: str) -> dict | None:
-    def validate(value: object) -> dict:
-        if not isinstance(value, dict) or type(value.get("id")) is not int or value["id"] <= 0:
-            raise ReleaseError("GitHub returned an invalid release identity")
-        if not isinstance(value.get("tag_name"), str) or not value["tag_name"]:
-            raise ReleaseError("GitHub returned an invalid release tag")
-        if type(value.get("draft")) is not bool or type(value.get("prerelease")) is not bool:
-            raise ReleaseError("GitHub returned invalid release publication flags")
-        if not isinstance(value.get("assets"), list) or any(not isinstance(asset, dict) for asset in value["assets"]):
-            raise ReleaseError("GitHub returned invalid release assets")
-        return value
-
-    def decode(body: str) -> object:
-        try:
-            return json.loads(body)
-        except ValueError as error:
-            raise ReleaseError("GitHub returned malformed release metadata") from error
-
     # gh api prints status only on stderr here; no HTTP response body is logged.
     result = gh(repo, "api", f"repos/{REPOSITORY}/releases/tags/{tag}", check=False)
     if result.returncode:
@@ -178,14 +180,14 @@ def release_metadata(repo: Path, tag: str) -> dict | None:
         listing = gh(repo, "api", f"repos/{REPOSITORY}/releases?per_page=100", "--paginate", "--slurp", check=False)
         if listing.returncode:
             raise ReleaseError("Could not list GitHub releases; refusing to assume the draft is absent")
-        pages = decode(listing.stdout)
+        pages = _decode_release_json(listing.stdout)
         if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
             raise ReleaseError("GitHub returned invalid release pagination")
         matches = []
         identities = set()
         for page in pages:
             for item in page:
-                value = validate(item)
+                value = _validate_release_metadata(item)
                 if value["id"] in identities:
                     raise ReleaseError("GitHub returned duplicate release identities")
                 identities.add(value["id"])
@@ -194,9 +196,27 @@ def release_metadata(repo: Path, tag: str) -> dict | None:
         if len(matches) > 1:
             raise ReleaseError("GitHub returned duplicate releases for the reserved tag")
         return matches[0] if matches else None
-    value = validate(decode(result.stdout))
+    value = _validate_release_metadata(_decode_release_json(result.stdout))
     if value.get("tag_name") != tag:
         raise ReleaseError("GitHub returned a different release tag")
+    return value
+
+
+def _create_draft_release(repo: Path, record: Reservation, title: str, notes: str) -> dict:
+    # The create response is authoritative; tag/list reads can still omit a just-created draft.
+    # https://docs.github.com/en/rest/releases/releases#create-a-release
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as body:
+        json.dump({"tag_name": record.tag, "target_commitish": record.source_sha,
+                   "draft": True, "prerelease": True, "name": title, "body": notes}, body)
+        body.flush()
+        response = gh(repo, "api", f"repos/{REPOSITORY}/releases", "--method", "POST",
+                      "--input", body.name, check=False)
+    if response.returncode:
+        # Do not retry an ambiguous create: the server may have already persisted the draft.
+        raise ReleaseError("Could not confirm release creation; retry using the preserved bundle")
+    value = _validate_release_metadata(_decode_release_json(response.stdout))
+    if value["tag_name"] != record.tag or not value["draft"] or not value["prerelease"]:
+        raise ReleaseError("Created release does not match the reserved draft prerelease")
     return value
 
 
@@ -707,12 +727,7 @@ def publish(repo: Path, record: Reservation, directory: Path) -> str:
     validation = json.loads((directory / "validation.json").read_text())
     title, notes = release_description(record, validation)
     if current is None:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as body:
-            body.write(notes)
-            body.flush()
-            gh(repo, "release", "create", record.tag, "--repo", REPOSITORY, "--verify-tag", "--draft", "--prerelease",
-               "--title", title, "--notes-file", body.name)
-        current = release_metadata(repo, record.tag)
+        current = _create_draft_release(repo, record, title, notes)
     if not current or not current.get("prerelease", False):
         raise ReleaseError("Existing release is not the expected prerelease")
     remote = {}
