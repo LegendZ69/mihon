@@ -51,13 +51,18 @@ import eu.kanade.tachiyomi.ui.webview.WebViewScreen
 import eu.kanade.tachiyomi.util.system.copyToClipboard
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import logcat.LogPriority
+import mihon.app.di.appGraph
 import mihon.feature.migration.config.MigrationConfigScreen
 import mihon.feature.migration.dialog.MigrateMangaDialog
+import mihon.feature.translation.ui.TranslationScreen
+import mihon.feature.translation.ui.translationControlDestination
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.chapter.model.Chapter
+import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.presentation.core.screens.LoadingScreen
 
@@ -158,7 +163,24 @@ class MangaScreen(
             onMultiMarkAsReadClicked = viewModel::markChaptersRead,
             onMarkPreviousAsReadClicked = viewModel::markPreviousChapterRead,
             onMultiDeleteClicked = viewModel::showDeleteChapterDialog,
-            onChapterSwipe = viewModel::chapterSwipe,
+            onChapterSwipe = { item, action ->
+                when (action) {
+                    LibraryPreferences.ChapterSwipeAction.Translate -> scope.launch {
+                        try {
+                            val destination = withIOContext {
+                                translationControlDestination(context.appGraph, mangaId, listOf(item.chapter.id))
+                            }
+                            navigator.push(destination)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            context.toast(failure.message ?: "Cannot start translation")
+                        }
+                    }
+                    LibraryPreferences.ChapterSwipeAction.TranslationQueue -> navigator.push(TranslationScreen(mangaId))
+                    else -> viewModel.chapterSwipe(item, action)
+                }
+            },
             onChapterSelected = viewModel::toggleSelection,
             onAllChapterSelected = viewModel::toggleAllSelection,
             onInvertSelection = viewModel::invertSelection,

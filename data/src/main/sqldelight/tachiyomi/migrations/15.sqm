@@ -1,0 +1,41 @@
+CREATE TABLE translation_jobs (
+    id TEXT NOT NULL PRIMARY KEY,
+    manga_id INTEGER NOT NULL,
+    chapter_id INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE INDEX translation_jobs_chapter ON translation_jobs(chapter_id);
+
+CREATE TABLE translation_images (
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL,
+    image_index INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (job_id, image_id)
+);
+
+CREATE TABLE translation_results (
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL,
+    committed_at INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (job_id, image_id)
+);
+
+CREATE TABLE translation_batches (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE translation_events (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    time INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE INDEX translation_events_job_time ON translation_events(job_id, time);

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "scenarios": {
+    "worker-active-resume": [{"min_pages": 1, "max_pages": 1, "steps": [
+      {"action": "success"}, {"action": "success", "delay_ms": 120000}, {"action": "success"}
+    ]}],
+    "worker-notification": [{"min_pages": 1, "max_pages": 1, "steps": [
+      {"action": "success"}, {"action": "success", "delay_ms": 120000}, {"action": "success"}
+    ]}],
+    "worker-network": [{"min_pages": 1, "max_pages": 1, "steps": [
+      {"action": "success"}, {"action": "success", "delay_ms": 120000}, {"action": "success"}
+    ]}],
+    "worker-screen-off": [{"min_pages": 1, "max_pages": 1, "steps": [
+      {"action": "success"}, {"action": "success", "delay_ms": 45000}
+    ]}],
+    "worker-screen-off-thaw": [{"min_pages": 1, "max_pages": 1, "steps": [
+      {"action": "success"}, {"action": "success", "delay_ms": 45000}, {"action": "success"}
+    ]}],
+    "worker-force-stop": [{"min_pages": 1, "max_pages": 1, "steps": [
+      {"action": "success"}, {"action": "success", "delay_ms": 120000}, {"action": "success"}
+    ]}]
+  }
+}

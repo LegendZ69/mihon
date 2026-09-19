@@ -270,6 +270,11 @@ class ReaderViewModel(
             .map(::ReaderChapter)
     }
 
+    /** The same filtered order used for next/previous reader navigation. */
+    suspend fun translationChapterOrder(): List<Long> = withIOContext {
+        chapterList.mapNotNull { it.chapter.id }
+    }
+
     private var incognitoMode: Boolean = false
     private val downloadAheadAmount = downloadPreferences.autoDownloadWhileReading.get()
 

@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "profiles": {
+    "vertex-3.8-global-shared": {
+      "provider": "vertex_service_account",
+      "model": "gemini-3.8-flash",
+      "location": "global",
+      "capacity": "shared",
+      "currency": "USD",
+      "verified_on": "2026-09-11",
+      "source_url": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
+      "input_per_million_usd": "1.50",
+      "output_per_million_usd": "7.50",
+      "max_input_tokens": 1048576,
+      "max_output_including_reasoning_tokens": 65536,
+      "basis": "Published standard rates before promotional credits. Image tokens are included in input; response and reasoning tokens are output. Reservations assume no cache discount. No grounding, search, explicit cache storage, tuned models, priority, provisioned throughput, or other separately billed tools are covered."
+    }
+  },
+  "fx": {
+    "sgd_per_usd": "1.267857142858",
+    "observed_on": "2026-09-11",
+    "verified_on": "2026-09-11",
+    "source_url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
+    "usd_per_eur": "1.1592",
+    "sgd_per_eur": "1.4697",
+    "basis": "ECB reference cross-rate, SGD per EUR divided by USD per EUR, rounded upward to 12 decimal places. A reference estimate, not the account's Cloud SGD SKU price or settlement rate."
+  }
+}

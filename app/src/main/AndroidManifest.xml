@@ -218,6 +218,9 @@
                 android:value="true" />
         </service>
 
+        <receiver android:name="mihon.feature.translation.TranslationQueueReceiver" android:exported="false" />
+        <activity android:name="mihon.feature.translation.ui.TranslationActivity" android:exported="false" />
+
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"

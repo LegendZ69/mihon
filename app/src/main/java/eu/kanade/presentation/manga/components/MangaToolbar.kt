@@ -47,6 +47,8 @@ fun MangaToolbar(
     titleAlphaProvider: () -> Float,
     backgroundAlphaProvider: () -> Float,
     modifier: Modifier = Modifier,
+    onClickTranslate: (() -> Unit)? = null,
+    translationControl: mihon.feature.translation.ui.TranslationControlSummary? = null,
 ) {
     val isActionMode = actionModeCounter > 0
     AppBar(
@@ -63,6 +65,20 @@ fun MangaToolbar(
             .copy(alpha = if (isActionMode) 1f else backgroundAlphaProvider()),
         navigateUp = navigateUp,
         actions = {
+            if (onClickTranslate != null && translationControl != null) {
+                mihon.feature.translation.ui.TranslationProgressButton(
+                    translationControl,
+                    onClickTranslate,
+                    compact = true,
+                    label = if (isActionMode || translationControl.active ||
+                        translationControl.complete
+                    ) {
+                        translationControl.actionLabel
+                    } else {
+                        "Translate"
+                    },
+                )
+            }
             var downloadExpanded by remember { mutableStateOf(false) }
             if (onClickDownload != null) {
                 val onDismissRequest = { downloadExpanded = false }
@@ -76,6 +92,14 @@ fun MangaToolbar(
             val filterTint = if (hasFilters) MaterialTheme.colorScheme.active else LocalContentColor.current
             AppBarActions(
                 actions = buildList {
+                    onClickTranslate?.let {
+                        add(
+                            AppBar.OverflowAction(
+                                title = if (isActionMode) "Translate selected chapters" else "Translate chapters",
+                                onClick = it,
+                            ),
+                        )
+                    }
                     if (isActionMode) {
                         add(
                             AppBar.Action(

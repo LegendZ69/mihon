@@ -1,0 +1,105 @@
+{
+  "imageId": "10",
+  "imageHash": "6493ca6dfb50a0032a66d74baaa04056af250e9c966e9e7dbec802c591e0a36a",
+  "width": 1200,
+  "height": 3600,
+  "regions": [
+    {
+      "id": "10:region-0",
+      "points": [
+        {
+          "x": 405.6,
+          "y": 266.56
+        },
+        {
+          "x": 793.2,
+          "y": 266.56
+        },
+        {
+          "x": 793.2,
+          "y": 319.872
+        },
+        {
+          "x": 405.6,
+          "y": 319.872
+        }
+      ],
+      "sourceText": "유나, 먼저 올라가!",
+      "translatedText": "Yuna, go up first!"
+    },
+    {
+      "id": "10:region-1",
+      "points": [
+        {
+          "x": 328.8,
+          "y": 1244.502
+        },
+        {
+          "x": 870,
+          "y": 1244.502
+        },
+        {
+          "x": 870,
+          "y": 1296.148
+        },
+        {
+          "x": 328.8,
+          "y": 1296.148
+        }
+      ],
+      "sourceText": "하지만 널 두고 갈 수는 없어.",
+      "translatedText": "But I can't leave you behind.",
+      "readingOrder": 1
+    },
+    {
+      "id": "10:region-2",
+      "points": [
+        {
+          "x": 354,
+          "y": 2225.084
+        },
+        {
+          "x": 844.8,
+          "y": 2225.084
+        },
+        {
+          "x": 844.8,
+          "y": 2275.064
+        },
+        {
+          "x": 354,
+          "y": 2275.064
+        }
+      ],
+      "sourceText": "걱정하지 마. 곧 따라갈게.",
+      "translatedText": "Don't worry. I'll catch up soon.",
+      "readingOrder": 2
+    },
+    {
+      "id": "10:region-3",
+      "points": [
+        {
+          "x": 490.8,
+          "y": 3201.3599
+        },
+        {
+          "x": 705.6,
+          "y": 3201.3599
+        },
+        {
+          "x": 705.6,
+          "y": 3258.004
+        },
+        {
+          "x": 490.8,
+          "y": 3258.004
+        }
+      ],
+      "sourceText": "약속이야.",
+      "translatedText": "I promise.",
+      "readingOrder": 3
+    }
+  ],
+  "detectedLanguage": "ko",
+  "revision": 1789151965350
+}

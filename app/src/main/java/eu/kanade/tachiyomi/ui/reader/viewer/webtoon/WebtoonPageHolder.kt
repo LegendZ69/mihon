@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import logcat.LogPriority
+import mihon.feature.translation.overlay.PageImageTransform
 import okio.Buffer
 import okio.BufferedSource
 import tachiyomi.core.common.i18n.stringResource
@@ -196,6 +197,7 @@ class WebtoonPageHolder(
                 Pair(source, isAnimated)
             }
             withUIContext {
+                page?.let(frame::bindTranslation)
                 frame.setImage(
                     source,
                     isAnimated,
@@ -216,6 +218,7 @@ class WebtoonPageHolder(
     }
 
     private fun process(imageSource: BufferedSource): BufferedSource {
+        frame.translationImageTransform = PageImageTransform.ORIGINAL
         if (viewer.config.dualPageRotateToFit) {
             return rotateDualPage(imageSource)
         }
@@ -224,6 +227,14 @@ class WebtoonPageHolder(
             val isDoublePage = ImageUtil.isWideImage(imageSource)
             if (isDoublePage) {
                 val upperSide = if (viewer.config.dualPageInvert) ImageUtil.Side.LEFT else ImageUtil.Side.RIGHT
+                frame.translationImageTransform =
+                    if (upperSide ==
+                        ImageUtil.Side.RIGHT
+                    ) {
+                        PageImageTransform.RIGHT_ABOVE_LEFT
+                    } else {
+                        PageImageTransform.LEFT_ABOVE_RIGHT
+                    }
                 return ImageUtil.splitAndMerge(imageSource, upperSide)
             }
         }
@@ -235,6 +246,8 @@ class WebtoonPageHolder(
         val isDoublePage = ImageUtil.isWideImage(imageSource)
         return if (isDoublePage) {
             val rotation = if (viewer.config.dualPageRotateToFitInvert) -90f else 90f
+            frame.translationImageTransform =
+                if (rotation > 0) PageImageTransform.ROTATE_CLOCKWISE else PageImageTransform.ROTATE_COUNTERCLOCKWISE
             ImageUtil.rotateImage(imageSource, rotation)
         } else {
             imageSource

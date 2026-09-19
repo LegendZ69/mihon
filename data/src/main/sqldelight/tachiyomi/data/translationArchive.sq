@@ -1,0 +1,41 @@
+archiveJob:
+SELECT payload FROM translation_jobs WHERE id = :id;
+
+archiveChapterJobs:
+SELECT payload FROM translation_jobs WHERE chapter_id = :chapterId ORDER BY updated_at DESC;
+
+archiveReview:
+SELECT payload FROM translation_reviews WHERE id = :id;
+
+upsertArchiveJob:
+INSERT INTO translation_jobs VALUES (:id, :mangaId, :chapterId, :priority, :updatedAt, :payload)
+ON CONFLICT(id) DO UPDATE SET manga_id = :mangaId, chapter_id = :chapterId,
+priority = :priority, updated_at = :updatedAt, payload = :payload;
+
+upsertArchiveReview:
+INSERT INTO translation_reviews VALUES (:id, :jobId, :imageId, :updatedAt, :payload)
+ON CONFLICT(id) DO UPDATE SET job_id = :jobId, image_id = :imageId, updated_at = :updatedAt, payload = :payload;
+
+insertArchiveEvent:
+INSERT OR IGNORE INTO translation_events (id, job_id, time, payload, operation_id, batch_id, image_id, stage, level)
+VALUES (:id, :jobId, :time, :payload, :operationId, :batchId, :imageId, :stage, :level);
+
+insertArchiveOperation:
+INSERT OR IGNORE INTO translation_operations VALUES (:id, :jobId, :parentId, :batchId, :imageId, :stage, :state, :updatedAt, :payload);
+
+archivePreviewJobs:
+SELECT id, manga_id, chapter_id FROM translation_jobs ORDER BY id LIMIT :pageLimit OFFSET :pageOffset;
+
+archivePreviewImageIdentities:
+SELECT CAST(json_object('id', image_id, 'index', image_index,
+    'hash', json_extract(payload, '$.contentHash'),
+    'width', json_extract(payload, '$.width'), 'height', json_extract(payload, '$.height')) AS TEXT)
+FROM translation_images WHERE job_id = :jobId ORDER BY image_id LIMIT :pageLimit OFFSET :pageOffset;
+
+archivePreviewResultRevisions:
+SELECT CAST(json_object('id', image_id, 'revision', json_extract(payload, '$.revision')) AS TEXT)
+FROM translation_results WHERE job_id = :jobId ORDER BY image_id LIMIT :pageLimit OFFSET :pageOffset;
+
+archivePreviewReviewRevisions:
+SELECT CAST(json_object('id', id, 'updatedAt', updated_at) AS TEXT)
+FROM translation_reviews WHERE job_id = :jobId ORDER BY id LIMIT :pageLimit OFFSET :pageOffset;

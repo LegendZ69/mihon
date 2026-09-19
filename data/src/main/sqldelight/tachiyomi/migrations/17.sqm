@@ -1,0 +1,44 @@
+CREATE TABLE translation_operations (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    parent_id TEXT,
+    batch_id TEXT,
+    image_id TEXT,
+    stage TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX translation_operations_job ON translation_operations(job_id, updated_at DESC);
+CREATE INDEX translation_operations_parent ON translation_operations(parent_id, updated_at);
+CREATE INDEX translation_operations_image ON translation_operations(job_id, image_id);
+
+CREATE TABLE translation_usage (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    time INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX translation_usage_time ON translation_usage(time DESC);
+CREATE INDEX translation_usage_job ON translation_usage(job_id, time DESC);
+
+CREATE TABLE translation_billing (
+    id TEXT NOT NULL PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    synced_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX translation_billing_connection ON translation_billing(connection_id, period_start);
+
+ALTER TABLE translation_events ADD COLUMN operation_id TEXT;
+ALTER TABLE translation_events ADD COLUMN batch_id TEXT;
+ALTER TABLE translation_events ADD COLUMN image_id TEXT;
+ALTER TABLE translation_events ADD COLUMN stage TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE translation_events ADD COLUMN level TEXT NOT NULL DEFAULT 'INFO';
+CREATE INDEX translation_events_operation ON translation_events(operation_id, time DESC);
+CREATE INDEX translation_events_batch ON translation_events(job_id, batch_id, time DESC);
+CREATE INDEX translation_events_image ON translation_events(job_id, image_id, time DESC);

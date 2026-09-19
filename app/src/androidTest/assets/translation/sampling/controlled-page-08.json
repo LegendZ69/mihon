@@ -1,0 +1,87 @@
+{
+  "imageId": "7",
+  "imageHash": "8ec84f9854dc46f072ec7e4587e93f69a02c14f7495d1a71e1a245ee4ebbeb14",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "7:region-0",
+      "points": [
+        {
+          "x": 458.4,
+          "y": 251.2
+        },
+        {
+          "x": 740.4,
+          "y": 251.2
+        },
+        {
+          "x": 740.4,
+          "y": 324.8
+        },
+        {
+          "x": 458.4,
+          "y": 324.8
+        }
+      ],
+      "sourceText": "立入禁止",
+      "translatedText": "NO ENTRY",
+      "type": "sign",
+      "aiConfidence": 0.95
+    },
+    {
+      "id": "7:region-1",
+      "points": [
+        {
+          "x": 757.2,
+          "y": 681.6
+        },
+        {
+          "x": 901.2,
+          "y": 681.6
+        },
+        {
+          "x": 901.2,
+          "y": 803.2
+        },
+        {
+          "x": 757.2,
+          "y": 803.2
+        }
+      ],
+      "sourceText": "쿵!",
+      "translatedText": "THUD!",
+      "type": "sound_effect",
+      "readingOrder": 1,
+      "aiConfidence": 0.95
+    },
+    {
+      "id": "7:region-2",
+      "points": [
+        {
+          "x": 459.6,
+          "y": 1203.2
+        },
+        {
+          "x": 739.2,
+          "y": 1203.2
+        },
+        {
+          "x": 739.2,
+          "y": 1276.8
+        },
+        {
+          "x": 459.6,
+          "y": 1276.8
+        }
+      ],
+      "sourceText": "緊急出口",
+      "translatedText": "EMERGENCY EXIT",
+      "type": "sign",
+      "readingOrder": 2,
+      "aiConfidence": 0.95
+    }
+  ],
+  "detectedLanguage": "ko",
+  "revision": 1789151965344
+}

@@ -55,6 +55,9 @@ fun ReaderAppBars(
     onOpenInWebView: (() -> Unit)?,
     onOpenInBrowser: (() -> Unit)?,
     onShare: (() -> Unit)?,
+    onTranslate: () -> Unit,
+    onToggleTranslation: () -> Unit,
+    onTranslatorSettings: () -> Unit,
 
     chapterNavigatorType: ChapterNavigatorType,
     verticalNavigatorHeight: Float,
@@ -74,6 +77,7 @@ fun ReaderAppBars(
     cropEnabled: Boolean,
     onClickCropBorder: () -> Unit,
     onClickSettings: () -> Unit,
+    translationControl: mihon.feature.translation.ui.TranslationControlSummary? = null,
 ) {
     val backgroundColor = MaterialTheme.colorScheme
         .surfaceColorAtElevation(3.dp)
@@ -97,6 +101,10 @@ fun ReaderAppBars(
                 onOpenInWebView = onOpenInWebView,
                 onOpenInBrowser = onOpenInBrowser,
                 onShare = onShare,
+                onTranslate = onTranslate,
+                onToggleTranslation = onToggleTranslation,
+                onTranslatorSettings = onTranslatorSettings,
+                translationControl = translationControl,
             )
         }
 

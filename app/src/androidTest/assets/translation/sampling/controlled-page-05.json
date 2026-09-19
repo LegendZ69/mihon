@@ -1,0 +1,109 @@
+{
+  "imageId": "4",
+  "imageHash": "4df2188c319afaf90f8b0e947df081c0a3cc99ebe8dd564c9a3b2ef24834b5ce",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "4:region-0",
+      "points": [
+        {
+          "x": 396,
+          "y": 212.8
+        },
+        {
+          "x": 805.2,
+          "y": 212.8
+        },
+        {
+          "x": 805.2,
+          "y": 260.8
+        },
+        {
+          "x": 396,
+          "y": 260.8
+        }
+      ],
+      "sourceText": "ユナ、こっちだ！",
+      "translatedText": "Yuna, over here!",
+      "aiConfidence": 0.95
+    },
+    {
+      "id": "4:region-1",
+      "points": [
+        {
+          "x": 433.2,
+          "y": 569.6
+        },
+        {
+          "x": 765.6,
+          "y": 569.6
+        },
+        {
+          "x": 765.6,
+          "y": 620.8
+        },
+        {
+          "x": 433.2,
+          "y": 620.8
+        }
+      ],
+      "sourceText": "잠깐! 같이 가자.",
+      "translatedText": "Wait! Let's go together.",
+      "readingOrder": 1,
+      "aiConfidence": 0.95
+    },
+    {
+      "id": "4:region-2",
+      "points": [
+        {
+          "x": 465.6,
+          "y": 932.8
+        },
+        {
+          "x": 734.4,
+          "y": 932.8
+        },
+        {
+          "x": 734.4,
+          "y": 979.2
+        },
+        {
+          "x": 465.6,
+          "y": 979.2
+        }
+      ],
+      "sourceText": "出口在左边",
+      "translatedText": "The exit is on the left.",
+      "readingOrder": 2,
+      "aiConfidence": 0.95
+    },
+    {
+      "id": "4:region-3",
+      "points": [
+        {
+          "x": 351.6,
+          "y": 1308.8
+        },
+        {
+          "x": 848.4,
+          "y": 1308.8
+        },
+        {
+          "x": 848.4,
+          "y": 1334.4
+        },
+        {
+          "x": 351.6,
+          "y": 1334.4
+        }
+      ],
+      "sourceText": "KEEP DOOR CLOSED",
+      "translatedText": "KEEP DOOR CLOSED",
+      "type": "sign",
+      "readingOrder": 3,
+      "aiConfidence": 1
+    }
+  ],
+  "revision": 1789151965339
+}

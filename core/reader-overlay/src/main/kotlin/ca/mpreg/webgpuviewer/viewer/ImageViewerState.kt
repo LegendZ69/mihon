@@ -1,0 +1,393 @@
+package ca.mpreg.webgpuviewer.viewer
+
+import android.content.res.Resources
+import android.view.Surface
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.MonotonicFrameClock
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.util.fastCoerceAtLeast
+import androidx.compose.ui.util.fastCoerceAtMost
+import androidx.webgpu.GPUColor
+import androidx.webgpu.GPUCommandEncoder
+import androidx.webgpu.GPURenderPassColorAttachment
+import androidx.webgpu.GPURenderPassDepthStencilAttachment
+import androidx.webgpu.GPURenderPassDescriptor
+import androidx.webgpu.GPURenderPassEncoder
+import androidx.webgpu.GPUTexture
+import androidx.webgpu.LoadOp
+import androidx.webgpu.StoreOp
+import ca.mpreg.webgpuviewer.filter.FilterChain
+import ca.mpreg.webgpuviewer.renderer.beginRenderPassWithColorView
+import ca.mpreg.webgpuviewer.renderer.endAndClose
+import ca.mpreg.webgpuviewer.renderer.Downscaler
+import ca.mpreg.webgpuviewer.renderer.DownscalerBox
+import ca.mpreg.webgpuviewer.renderer.Rescaler
+import ca.mpreg.webgpuviewer.renderer.TileRenderer
+import ca.mpreg.webgpuviewer.renderer.Upscaler
+import ca.mpreg.webgpuviewer.renderer.UpscalerArtCnn
+import ca.mpreg.webgpuviewer.renderer.UpscalerCatmullRom
+import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
+import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.Companion.dispatcher
+import ca.mpreg.webgpuviewer.transition.Transition
+import ca.mpreg.webgpuviewer.transition.TransitionBasic
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+
+open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boolean = false) {
+    val renderer = WebGpuRenderer()
+
+    internal val tiles = TileRenderer { invalidate() }
+
+    /**
+     * How a high-quality tile that magnifies the page is resized - see [Rescaler].
+     * [UpscalerCatmullRom] by default; [UpscalerArtCnn] runs a doubling network first and leaves
+     * whatever zoom is left over to Catmull-Rom. Assigning drops the tiles already generated.
+     */
+    var upscaler: Upscaler
+        get() = tiles.upscaler
+        set(value) {
+            tiles.upscaler = value
+        }
+
+    /**
+     * How a high-quality tile that shrinks the page is resized - see [Rescaler]. [DownscalerBox]
+     * is the only one, and is the default.
+     */
+    var downscaler: Downscaler
+        get() = tiles.downscaler
+        set(value) {
+            tiles.downscaler = value
+        }
+
+    /**
+     * Post-processing over the finished frame - assign [FilterChain.filters] to run some. Wired
+     * to [invalidate] here, so changing a filter's settings redraws by itself.
+     */
+    val filters: FilterChain = renderer.filters.also { chain ->
+        chain.onInvalidate = { invalidate() }
+    }
+
+    var scope: CoroutineScope? = null
+
+    var animationJob: Job? = null
+
+    val width get() = renderer.width
+    val height get() = renderer.height
+
+    /** Top padding in pixels to avoid display cutout. Set automatically by ImageViewer when avoidCutout is true. */
+    var cutoutTopPx: Float = 0f
+
+    val viewportHeight: Float
+        get() = height - if (avoidCutout) cutoutTopPx else 0f
+
+    var dpi = Resources.getSystem().displayMetrics.densityDpi / 100f
+    var density: Density =
+        Density(density = Resources.getSystem().displayMetrics.density, fontScale = 1f)
+
+    /** When true, images will be positioned/scaled to avoid the display cutout. */
+    var avoidCutout: Boolean by mutableStateOf(false)
+
+    /** When true, always shift images below cutout. When false, only shift if image would overlap cutout. */
+    var alwaysAvoidCutout: Boolean by mutableStateOf(false)
+
+    private var suppressPageChange = false
+
+    var pageOffset = 0f
+        set(value) {
+            var v = value
+            var pageDelta = 0
+
+            if (!suppressPageChange) {
+                while (v >= 1f && haveNext) {
+                    pageDelta += 1
+                    v -= 1f
+                }
+                while (v <= -1f && havePrev) {
+                    pageDelta -= 1
+                    v += 1f
+                }
+            }
+
+            if (!haveNext) v = v.fastCoerceAtMost(1f)
+            if (!havePrev) v = v.fastCoerceAtLeast(-1f)
+
+            val settling = field != 0f && v == 0f
+
+            field = v
+
+            if (pageDelta != 0) {
+                onPageChange?.invoke(if (isReversed) -pageDelta else pageDelta)
+            }
+
+            // Rotate rather than invalidate: onPageChange has already updated whatever backs
+            // getPage, so slot 2 often already holds a valid render of this new current page.
+            if (settling) {
+                val current = getPage(0)
+                if (current != null) Transition.rotateCacheOnPageChange(current) else Transition.invalidateCache()
+            }
+        }
+
+    private fun setPageOffsetDirect(value: Float) {
+        suppressPageChange = true
+        pageOffset = value
+        suppressPageChange = false
+    }
+
+    fun animatePageTurn(direction: Int) {
+        animationJob?.cancel()
+        animationJob = scope?.launch {
+            setPageOffsetDirect(direction.toFloat())
+            invalidate()
+            try {
+                Animatable(direction.toFloat()).animateTo(
+                    0f, animationSpec = spring(
+                        stiffness = Spring.StiffnessMediumLow, visibilityThreshold = 0.002f
+                    )
+                ) {
+                    setPageOffsetDirect(value)
+                    invalidate()
+                }
+            } finally {
+                // Always clear transitionFromPage - if cancelled, getPage will provide the right page
+                transitionFromPage = null
+            }
+            // Only snap to 0 when animation completes normally
+            setPageOffsetDirect(0f)
+            invalidate()
+        }
+    }
+
+    val havePrev get() = getPage(if (isReversed) 1 else -1) != null
+    val haveNext get() = getPage(if (isReversed) -1 else 1) != null
+
+    var fetchPage: ((Int) -> ImagePage?)? = null
+
+    var onPageChange: ((Int) -> Unit)? = null
+    var onTap: ((Offset) -> Unit)? = null
+    var onLongTap: ((Offset) -> Unit)? = null
+
+    /** Override for the "from" page during far navigation animation */
+    var transitionFromPage: ImagePage? = null
+
+    // Pre-allocated invalidate lambda - same for the lifetime of this state
+    private val invalidateCallback: () -> Unit = { invalidate() }
+
+    /**
+     * The page [index] steps from current. [isReversed] plays no part here - [fetchPage] and
+     * [onPageChange] are what decide what a step actually means.
+     */
+    fun getPage(index: Int): ImagePage? {
+        return fetchPage?.invoke(index)?.also { it.attach(this, scope, invalidateCallback) }
+    }
+
+    /**
+     * The pages the last [captureRenderState] drew with, which is what [ImagePage.isOnScreen]
+     * answers from - a page can then decide for itself whether a redraw is worth asking for.
+     * Read off the last frame rather than re-fetched, since anything that changes which pages
+     * are on screen draws a frame of its own.
+     */
+    @Volatile
+    protected var onScreenPages: List<ImagePage> = emptyList()
+
+    internal fun isOnScreen(page: ImagePage): Boolean = onScreenPages.any { it.covers(page) }
+
+    @Synchronized
+    fun init(scope: CoroutineScope, surface: Surface, width: Int, height: Int) {
+        this.renderer.init(scope, surface, width, height)
+        this.scope = scope
+
+        scope.launch {
+            _postInit.forEach { it() }
+            _postInit.clear()
+        }
+    }
+
+    var firstPos = Offset.Zero
+    var currentPos = Offset.Zero
+
+    var transition: Transition = if (isVertical) TransitionBasic.Vertical else TransitionBasic
+
+    // Anything changed since the last frame drawn - all [collect] needs, however many
+    // invalidates said so.
+    private val dirty = AtomicBoolean(true)
+
+    // Wakes [collect] when there is nothing to draw. Buffered, so a send can't be lost against
+    // [dirty]'s check.
+    private val renderWake = Channel<Unit>(Channel.CONFLATED)
+
+    fun invalidate() {
+        dirty.set(true)
+        renderWake.trySend(Unit)
+    }
+
+    /**
+     * Draw at most one frame per display frame, for as long as anything is [dirty].
+     *
+     * A frame loop, not a pass per invalidate: a fling step, a fade step, a decode and the tile
+     * worker all land in one frame, and drawing each presented the same content several times per
+     * vsync. [renderWake] carries no count, so a draw clearing [dirty] doesn't leave that frame's
+     * remaining invalidates to wait out a frame each - half rate, not coalescing.
+     *
+     * Nothing may be awaited between the frame wait and the capture, the draw included: this
+     * registers as an awaiter mid-draw to land in the next frame's batch, behind the animation,
+     * and registering after that batch has gone out costs a frame every frame.
+     */
+    suspend fun collect() = coroutineScope {
+        val frameClock = currentCoroutineContext()[MonotonicFrameClock]
+        var drawing: Job? = null
+        while (true) {
+            frameClock?.withFrameNanos { }
+            // Still drawing: leave [dirty] set for the next frame.
+            if (drawing?.isActive == true) continue
+            // Anything invalidating from here belongs to the next frame.
+            if (!dirty.getAndSet(false)) {
+                renderWake.receive()
+                continue
+            }
+            // Drop the wake this frame's invalidate left, or going idle costs a spurious one.
+            renderWake.tryReceive()
+            // Capture render state on main thread before any thread switching
+            val snapshot = captureRenderState() ?: continue
+            // Now render on GPU thread with captured state
+            drawing = launch(dispatcher) {
+                // Nothing drawn - ask for the frame again.
+                if (!renderer.render { encoder, texture ->
+                        renderSnapshot(encoder, texture, snapshot)
+                    }
+                ) {
+                    invalidate()
+                }
+            }
+        }
+    }
+
+    protected open fun captureRenderState(): Any? {
+        val currentPage = getPage(0) ?: return null
+        val offset = pageOffset
+        val adjacentPage = when {
+            offset == 0f -> null
+            // Use override if set (for far navigation)
+            transitionFromPage != null -> transitionFromPage
+            offset > 0f -> getPage(if (isReversed) -1 else 1)
+            else -> getPage(if (isReversed) 1 else -1)
+        }
+        // Only used to pre-warm the transition cache while at rest (see renderSnapshot), so
+        // there's no need to look it up while a turn is already in progress.
+        val nextPage = if (offset == 0f) getPage(1) else null
+        onScreenPages = listOfNotNull(currentPage, adjacentPage)
+        return RenderSnapshot(
+            currentPage, adjacentPage, nextPage, offset, transition, firstPos, currentPos
+        )
+    }
+
+    private class RenderSnapshot(
+        val currentPage: ImagePage,
+        val adjacentPage: ImagePage?,
+        val nextPage: ImagePage?,
+        val offset: Float,
+        val transition: Transition,
+        val firstPos: Offset,
+        val currentPos: Offset,
+    )
+
+    /**
+     * Run [block] against a render pass over [texture], ending the pass afterwards either way.
+     *
+     * Pass ownership sits here rather than inside the transitions, since only the code that knows
+     * the whole frame's contents can decide where the pass starts and ends. A draw that throws
+     * still leaves the pass closed, and [WebGpuRenderer.render] turns it into a dropped frame.
+     *
+     * Always clears: `getCurrentTexture` rotates buffers, so loading would show stale content
+     * from several frames ago around the page.
+     */
+    protected fun renderPass(
+        encoder: GPUCommandEncoder, texture: GPUTexture, block: (GPURenderPassEncoder) -> Unit
+    ) {
+        val pass = encoder.beginRenderPassWithColorView(texture) { view ->
+            GPURenderPassDescriptor(
+                colorAttachments = arrayOf(
+                    GPURenderPassColorAttachment(
+                        view = view,
+                        loadOp = LoadOp.Clear,
+                        storeOp = StoreOp.Store,
+                        clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
+                    )
+                ),
+                // Cleared fresh every frame so TileRenderer's blit can mark which pixels it just
+                // covered and RenderPage's masked draws can skip re-shading them - see
+                // TileRenderer.stencilViewFor. Discarded afterward: nothing reads it across frames.
+                depthStencilAttachment = GPURenderPassDepthStencilAttachment(
+                    view = tiles.stencilViewFor(texture),
+                    stencilLoadOp = LoadOp.Clear,
+                    stencilStoreOp = StoreOp.Discard,
+                    stencilClearValue = 0,
+                )
+            )
+        }
+        try {
+            block(pass)
+        } finally {
+            pass.endAndClose()
+        }
+    }
+
+    protected open suspend fun renderSnapshot(
+        encoder: GPUCommandEncoder, texture: GPUTexture, snapshot: Any
+    ) {
+        val s = snapshot as RenderSnapshot
+        tiles.newFrame()
+        val page = s.currentPage
+
+        if (s.adjacentPage != null && s.offset != 0f) {
+            s.transition.render(
+                page, s.adjacentPage, encoder, texture, s.offset, s.firstPos, s.currentPos, tiles
+            )
+            return
+        }
+
+        val covered = page.drawLive(encoder, texture, tiles)
+
+        // Opportunistic: once the current page's tiles settle, prewarm the next page's too,
+        // so a transition into it starts already mostly sharp (Transition.getCachedTexture
+        // seeds itself and layers tiles in live, so this no longer needs to be complete
+        // first). Gated on atHome since the cache is keyed by (x, y, scale).
+        if (covered && page is ImagePage.ImageSingle && page.atHome) {
+            val next = s.nextPage as? ImagePage.ImageSingle
+            if (next != null && next.highQuality && !next.isAnimated && next.atHome) {
+                tiles.prewarm(next, texture)
+            }
+        }
+    }
+
+    private val _postInit = mutableListOf<(suspend () -> Unit)>()
+
+    @Synchronized
+    fun post(fn: suspend () -> Unit) {
+        val activeScope = scope
+        if (activeScope?.isActive == true) {
+            activeScope.launch(dispatcher) {
+                fn()
+            }
+        } else {
+            _postInit.add(fn)
+        }
+    }
+
+    fun cleanup() {
+        animationJob?.cancel()
+        tiles.cleanup()
+        renderer.cleanup()
+    }
+}

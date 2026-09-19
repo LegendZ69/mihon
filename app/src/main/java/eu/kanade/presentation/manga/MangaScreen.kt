@@ -301,6 +301,14 @@ private fun MangaScreenSmallImpl(
                 onClickRefresh = onRefresh,
                 onClickMigrate = onMigrateClicked,
                 onClickEditNotes = onEditNotesClicked,
+                onClickTranslate = mihon.feature.translation.ui.chapterTranslationAction(
+                    state.manga.id,
+                    chapters.filter { it.selected }.map { it.chapter.id },
+                ),
+                translationControl = mihon.feature.translation.ui.rememberTranslationControl(
+                    listOf(state.manga.id),
+                    (if (isAnySelected) chapters.filter { it.selected } else state.chapters).map { it.chapter.id },
+                ),
                 actionModeCounter = selectedChapterCount,
                 onCancelActionMode = { onAllChapterSelected(false) },
                 onSelectAll = { onAllChapterSelected(true) },
@@ -536,6 +544,14 @@ fun MangaScreenLargeImpl(
                 onClickRefresh = onRefresh,
                 onClickMigrate = onMigrateClicked,
                 onClickEditNotes = onEditNotesClicked,
+                onClickTranslate = mihon.feature.translation.ui.chapterTranslationAction(
+                    state.manga.id,
+                    chapters.filter { it.selected }.map { it.chapter.id },
+                ),
+                translationControl = mihon.feature.translation.ui.rememberTranslationControl(
+                    listOf(state.manga.id),
+                    (if (isAnySelected) chapters.filter { it.selected } else state.chapters).map { it.chapter.id },
+                ),
                 onCancelActionMode = { onAllChapterSelected(false) },
                 actionModeCounter = selectedChapterCount,
                 onSelectAll = { onAllChapterSelected(true) },
@@ -781,6 +797,7 @@ private fun LazyListScope.sharedChapterItems(
                     read = item.chapter.read,
                     bookmark = item.chapter.bookmark,
                     selected = item.selected,
+                    swipesEnabled = !isAnyChapterSelected,
                     downloadIndicatorEnabled = !isAnyChapterSelected && !manga.isLocal(),
                     downloadStateProvider = { item.downloadState },
                     downloadProgressProvider = { item.downloadProgress },
@@ -805,6 +822,22 @@ private fun LazyListScope.sharedChapterItems(
                     },
                     onChapterSwipe = {
                         onChapterSwipe(item, it)
+                    },
+                    translationAction = if (isAnyChapterSelected) {
+                        null
+                    } else {
+                        {
+                            mihon.feature.translation.ui.TranslationProgressButton(
+                                mihon.feature.translation.ui.rememberTranslationControl(
+                                    listOf(manga.id),
+                                    listOf(item.chapter.id),
+                                ),
+                                mihon.feature.translation.ui.chapterTranslationAction(
+                                    manga.id,
+                                    listOf(item.chapter.id),
+                                ),
+                            )
+                        }
                     },
                 )
             }

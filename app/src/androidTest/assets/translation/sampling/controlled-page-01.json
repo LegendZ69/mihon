@@ -1,0 +1,59 @@
+{
+  "imageId": "0",
+  "imageHash": "080d1c771e309e331f84699254d4ae5e7c52c0d6830e55253f932bbcde685246",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "0:region-0",
+      "points": [
+        {
+          "x": 789.6,
+          "y": 294.4
+        },
+        {
+          "x": 960,
+          "y": 294.4
+        },
+        {
+          "x": 960,
+          "y": 747.2
+        },
+        {
+          "x": 789.6,
+          "y": 747.2
+        }
+      ],
+      "sourceText": "ユナ 扉を開けないで まだ敵が外にいる",
+      "translatedText": "Yuna, don't open the door. The enemy is still outside.",
+      "aiConfidence": 1
+    },
+    {
+      "id": "0:region-1",
+      "points": [
+        {
+          "x": 288,
+          "y": 982.4
+        },
+        {
+          "x": 402,
+          "y": 982.4
+        },
+        {
+          "x": 402,
+          "y": 1257.6
+        },
+        {
+          "x": 288,
+          "y": 1257.6
+        }
+      ],
+      "sourceText": "わかった ここで待つ",
+      "translatedText": "Got it. I'll wait here.",
+      "readingOrder": 1,
+      "aiConfidence": 1
+    }
+  ],
+  "detectedLanguage": "ja",
+  "revision": 1789151965332
+}

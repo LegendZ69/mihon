@@ -227,6 +227,8 @@ class LibraryPreferences(
         ToggleBookmark,
         Download,
         Disabled,
+        Translate,
+        TranslationQueue,
     }
 
     companion object {

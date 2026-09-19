@@ -92,6 +92,7 @@ import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import logcat.LogPriority
 import mihon.app.di.AppGraph
+import mihon.app.di.appGraph
 import mihon.core.metro.metroGraph
 import tachiyomi.core.common.Constants
 import tachiyomi.core.common.i18n.stringResource
@@ -449,6 +450,28 @@ class ReaderActivity : BaseActivity() {
     @Composable
     fun AppBars(state: ReaderViewModel.State) {
         val isHttpSource = state.source is HttpSource
+        val translationRevision by appGraph.translationPreferences.revision.collectAsState()
+        androidx.compose.runtime.LaunchedEffect(
+            state.manga?.id,
+            state.currentChapter?.chapter?.id,
+            translationRevision,
+        ) {
+            val manga = state.manga
+            val chapterId = state.currentChapter?.chapter?.id
+            if (manga != null && chapterId != null) {
+                try {
+                    appGraph.translationManager.onChapterOpened(manga, chapterId, viewModel.translationChapterOrder())
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.widget.Toast.makeText(
+                        this@ReaderActivity,
+                        e.message ?: "Automatic translation failed",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
 
         val cropBorderPaged by readerPreferences.cropBorders.collectAsState()
         val cropBorderWebtoon by readerPreferences.cropBordersWebtoon.collectAsState()
@@ -461,9 +484,19 @@ class ReaderActivity : BaseActivity() {
         )
         val verticalNavigatorOnLeft by readerPreferences.verticalNavigatorOnLeft.collectAsState()
         val verticalNavigatorHeight by readerPreferences.verticalNavigatorHeight.collectAsState()
+        val translationMangaId = state.manga?.id
+        val translationChapterId = state.currentChapter?.chapter?.id
 
         ReaderAppBars(
             visible = state.menuVisible,
+            translationControl = if (state.menuVisible && translationMangaId != null && translationChapterId != null) {
+                mihon.feature.translation.ui.rememberTranslationControl(
+                    listOf(translationMangaId),
+                    listOf(translationChapterId),
+                )
+            } else {
+                null
+            },
 
             mangaTitle = state.manga?.title,
             chapterTitle = state.currentChapter?.chapter?.name,
@@ -474,6 +507,57 @@ class ReaderActivity : BaseActivity() {
             onOpenInWebView = ::openChapterInWebView.takeIf { isHttpSource },
             onOpenInBrowser = ::openChapterInBrowser.takeIf { isHttpSource },
             onShare = ::shareChapter.takeIf { isHttpSource },
+            onTranslate = {
+                val manga = state.manga
+                val chapterId = state.currentChapter?.chapter?.id
+                if (manga != null && chapterId != null) {
+                    lifecycleScope.launch {
+                        try {
+                            val destination = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                mihon.feature.translation.ui.translationControlDestination(
+                                    appGraph,
+                                    manga.id,
+                                    listOf(chapterId),
+                                )
+                            }
+                            startActivity(
+                                if (destination is mihon.feature.translation.ui.TranslationStructuredImportScreen) {
+                                    mihon.feature.translation.ui.TranslationActivity.importIntent(
+                                        this@ReaderActivity,
+                                        listOf(manga.id),
+                                        listOf(chapterId),
+                                    )
+                                } else {
+                                    mihon.feature.translation.ui.TranslationActivity.intent(
+                                        this@ReaderActivity,
+                                        manga.id,
+                                    )
+                                },
+                            )
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            android.widget.Toast.makeText(
+                                this@ReaderActivity,
+                                e.message ?: "Cannot translate chapter",
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            },
+            onToggleTranslation = {
+                state.manga?.let { manga ->
+                    val prefs = appGraph.translationPreferences
+                    val config = prefs.effectiveSettings(manga.id)
+                    prefs.update(config.copy(style = config.style.copy(enabled = !config.style.enabled)), manga.id)
+                }
+            },
+            onTranslatorSettings = {
+                startActivity(
+                    mihon.feature.translation.ui.TranslationActivity.intent(this@ReaderActivity, state.manga?.id),
+                )
+            },
 
             chapterNavigatorType = if (!verticalNavigator) {
                 if (state.viewer is R2LPagerViewer || (state.viewer as? WebGpuViewer)?.isReversed ?: false) {

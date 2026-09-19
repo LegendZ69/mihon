@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "corpus_id": "mihon-controlled-translation-v1",
+  "provenance": "Original, synthetic text-and-shape fixtures authored for translator validation. These are not scanned manga or user-selected chapters.",
+  "human_meaning_review": "pending",
+  "geometry": "Original-image pixel coordinates; polygons enclose rendered text with padding. Reading order excludes incidental regions.",
+  "vertical_layout": "Upright glyphs stacked top-to-bottom, columns right-to-left; no vertical punctuation substitutions or typesetting claims.",
+  "five_page_chapter": ["01-ja-vertical", "02-ko-dialogue", "03-zh-hans", "04-zh-hant", "05-mixed"],
+  "glossary": {"ユナ": "Yuna", "유나": "Yuna", "尤娜": "Yuna"},
+  "pages": [
+    {
+      "id": "01-ja-vertical", "width": 1200, "height": 1600,
+      "coverage": ["Japanese", "vertical text", "right-to-left order", "negation", "names"],
+      "regions": [
+        {"id": "ja-1", "source_text": "ユナ\n扉を開けないで\nまだ敵が外にいる", "font": "ja", "font_size": 48, "layout": "vertical-rtl", "box": [650, 160, 450, 720], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 0, "reference_translation": "Yuna, do not open the door. The enemy is still outside.", "meaning_notes": ["Preserve the prohibition: do not turn it into an instruction to open the door.", "Yuna is the person being addressed."]},
+        {"id": "ja-2", "source_text": "わかった\nここで待つ", "font": "ja", "font_size": 48, "layout": "vertical-rtl", "box": [130, 850, 430, 540], "role": "dialogue", "speaker": "Yuna", "include": true, "reading_order": 1, "reference_translation": "Understood. I will wait here.", "meaning_notes": ["The response belongs to Yuna; preserve speaker order."]}
+      ]
+    },
+    {
+      "id": "02-ko-dialogue", "width": 1200, "height": 1600,
+      "coverage": ["Korean", "negation", "names", "speaker relationships"],
+      "regions": [
+        {"id": "ko-1", "source_text": "유나야, 그 문을 열지 마!\n밖에 아직 적이 있어.", "font": "ko", "font_size": 48, "box": [80, 180, 1040, 390], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 0, "reference_translation": "Yuna, do not open that door! The enemy is still outside.", "meaning_notes": ["Preserve the warning and the location outside."]},
+        {"id": "ko-2", "source_text": "알았어. 나는 여기서 기다릴게.\n너는 먼저 가.", "font": "ko", "font_size": 46, "box": [80, 900, 1040, 390], "role": "dialogue", "speaker": "Yuna", "include": true, "reading_order": 1, "reference_translation": "Okay. I will wait here. You go ahead.", "meaning_notes": ["Keep who waits and who goes ahead distinct."]}
+      ]
+    },
+    {
+      "id": "03-zh-hans", "width": 1200, "height": 1600,
+      "coverage": ["simplified Chinese", "negation", "quantities"],
+      "regions": [
+        {"id": "hans-1", "source_text": "尤娜，别打开那扇门！\n敌人还在外面。", "font": "zh", "font_size": 52, "box": [90, 180, 1020, 380], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 0, "reference_translation": "Yuna, do not open that door! The enemy is still outside.", "meaning_notes": ["Preserve the negation and proper name."]},
+        {"id": "hans-2", "source_text": "我们只剩三分钟。\n不要把药交给他。", "font": "zh", "font_size": 52, "box": [90, 900, 1020, 380], "role": "narration", "include": true, "reading_order": 1, "reference_translation": "We have only three minutes left. Do not give him the medicine.", "meaning_notes": ["Preserve three minutes, the medicine, and the prohibition."]}
+      ]
+    },
+    {
+      "id": "04-zh-hant", "width": 1200, "height": 1600,
+      "coverage": ["traditional Chinese", "negation", "conditional meaning"],
+      "regions": [
+        {"id": "hant-1", "source_text": "尤娜，別打開那扇門！\n敵人還在外面。", "font": "zh", "font_size": 52, "box": [90, 180, 1020, 380], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 0, "reference_translation": "Yuna, do not open that door! The enemy is still outside.", "meaning_notes": ["Preserve the warning, not an instruction to open the door."]},
+        {"id": "hant-2", "source_text": "如果我沒回來，\n就帶妹妹離開這裡。", "font": "zh", "font_size": 52, "box": [90, 900, 1020, 380], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 1, "reference_translation": "If I do not return, take my younger sister away from here.", "meaning_notes": ["Preserve the conditional, non-return, and younger-sister relationship.", "Chinese omits an explicit possessor for younger sister; do not treat the reference possessive as an exact-match requirement."]}
+      ]
+    },
+    {
+      "id": "05-mixed", "width": 1200, "height": 1600,
+      "coverage": ["mixed languages", "names", "meaningful signs"],
+      "regions": [
+        {"id": "mixed-ja", "source_text": "ユナ、こっちだ！", "font": "ja", "font_size": 54, "box": [90, 120, 1020, 230], "role": "dialogue", "include": true, "reading_order": 0, "reference_translation": "Yuna, this way!", "meaning_notes": ["Keep the name consistent with the series glossary."]},
+        {"id": "mixed-ko", "source_text": "잠깐! 같이 가자.", "font": "ko", "font_size": 54, "box": [90, 480, 1020, 230], "role": "dialogue", "include": true, "reading_order": 1, "reference_translation": "Wait! Let us go together.", "meaning_notes": ["Preserve the invitation to go together."]},
+        {"id": "mixed-zh", "source_text": "出口在左边", "font": "zh", "font_size": 54, "box": [90, 840, 1020, 230], "role": "sign", "include": true, "reading_order": 2, "reference_translation": "The exit is on the left.", "meaning_notes": ["Keep left distinct from right."]},
+        {"id": "mixed-en", "source_text": "KEEP DOOR CLOSED", "font": "en", "font_size": 48, "box": [90, 1200, 1020, 230], "role": "sign", "include": true, "reading_order": 3, "reference_translation": "KEEP DOOR CLOSED", "meaning_notes": ["Already-English source is meaningful and should not be discarded as an advertisement."]}
+      ]
+    },
+    {
+      "id": "06-tiny-lettering", "width": 1200, "height": 1600,
+      "coverage": ["tiny lettering", "Japanese", "Korean", "simplified Chinese"],
+      "regions": [
+        {"id": "tiny-ja", "source_text": "声を出さないで", "font": "ja", "font_size": 12, "box": [130, 220, 440, 130], "role": "dialogue", "include": true, "reading_order": 0, "reference_translation": "Do not make a sound.", "meaning_notes": ["A 12-pixel source font is deliberately difficult; record an omission rather than inventing text."]},
+        {"id": "tiny-ko", "source_text": "아직 끝나지 않았어.", "font": "ko", "font_size": 18, "box": [650, 750, 410, 150], "role": "dialogue", "include": true, "reading_order": 1, "reference_translation": "It is not over yet.", "meaning_notes": ["Preserve not and yet."]},
+        {"id": "tiny-zh", "source_text": "别忘了我们的约定。", "font": "zh", "font_size": 24, "box": [200, 1190, 800, 180], "role": "narration", "include": true, "reading_order": 2, "reference_translation": "Do not forget our promise.", "meaning_notes": ["Retain the shared promise."]}
+      ]
+    },
+    {
+      "id": "07-rotated", "width": 1200, "height": 1600,
+      "coverage": ["rotated lettering", "rotation geometry", "Korean", "Japanese"],
+      "regions": [
+        {"id": "rotated-ko", "source_text": "멈춰! 위험해!", "font": "ko", "font_size": 58, "rotation_degrees_ccw": 18, "box": [100, 170, 1000, 480], "role": "dialogue", "include": true, "reading_order": 0, "reference_translation": "Stop! It is dangerous!", "meaning_notes": ["Rotation must not reverse the order of words."]},
+        {"id": "rotated-ja", "source_text": "逃げて！", "font": "ja", "font_size": 62, "rotation_degrees_ccw": -90, "box": [400, 860, 400, 540], "role": "dialogue", "include": true, "reading_order": 1, "reference_translation": "Run away!", "meaning_notes": ["This is a horizontally typeset passage rotated clockwise, distinct from vertical Japanese columns."]}
+      ]
+    },
+    {
+      "id": "08-signs-and-sfx", "width": 1200, "height": 1600,
+      "coverage": ["meaningful signs", "sound effects", "Japanese", "Korean", "traditional Chinese"],
+      "regions": [
+        {"id": "sign-ja", "source_text": "立入禁止", "font": "ja", "font_size": 70, "box": [160, 160, 880, 260], "role": "sign", "include": true, "reading_order": 0, "reference_translation": "No entry", "meaning_notes": ["An in-scene warning sign is meaningful."]},
+        {"id": "sfx-ko", "source_text": "쿵!", "font": "ko", "font_size": 128, "box": [620, 570, 420, 350], "role": "sound_effect", "include": true, "reading_order": 1, "reference_translation": "THUD!", "meaning_notes": ["An impact sound effect; equivalent English impact words are acceptable."]},
+        {"id": "sign-hant", "source_text": "緊急出口", "font": "zh", "font_size": 70, "box": [160, 1110, 880, 260], "role": "sign", "include": true, "reading_order": 2, "reference_translation": "Emergency exit", "meaning_notes": ["Do not classify this sign as an advertisement."]}
+      ]
+    },
+    {
+      "id": "09-incidental-text", "width": 1200, "height": 1600,
+      "coverage": ["advertisement exclusion", "watermark exclusion", "narration retention"],
+      "regions": [
+        {"id": "story-ko", "source_text": "그날 밤, 우리는 다시 만났다.", "font": "ko", "font_size": 50, "box": [80, 570, 1040, 350], "role": "narration", "include": true, "reading_order": 0, "reference_translation": "That night, we met again.", "meaning_notes": ["Retain the story narration between incidental text."]},
+        {"id": "advertisement", "source_text": "ADVERTISEMENT\nBuy a subscription today", "font": "en", "font_size": 42, "box": [70, 70, 1060, 300], "role": "advertisement", "include": false, "reading_order": null, "exclusion_reason": "Explicitly labeled synthetic subscription advertisement outside the story panel."},
+        {"id": "watermark", "source_text": "SAMPLE WATERMARK\nexample.invalid", "font": "en", "font_size": 32, "box": [540, 1220, 590, 250], "role": "watermark", "include": false, "reading_order": null, "exclusion_reason": "Explicit synthetic publisher-style watermark; example.invalid is not a real service."}
+      ]
+    },
+    {
+      "id": "10-blank", "width": 1200, "height": 1600,
+      "coverage": ["empty page", "hallucination check"], "blank": true, "regions": []
+    },
+    {
+      "id": "11-long-strip", "width": 1200, "height": 3600,
+      "coverage": ["long strip", "top-to-bottom order", "split-and-stack geometry", "Korean"],
+      "regions": [
+        {"id": "strip-1", "source_text": "유나, 먼저 올라가!", "font": "ko", "font_size": 54, "box": [90, 140, 1020, 300], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 0, "reference_translation": "Yuna, go up first!", "meaning_notes": ["Preserve upward direction and who goes first."]},
+        {"id": "strip-2", "source_text": "하지만 널 두고 갈 수는 없어.", "font": "ko", "font_size": 49, "box": [90, 1120, 1020, 300], "role": "dialogue", "speaker": "Yuna", "include": true, "reading_order": 1, "reference_translation": "But I cannot leave you behind.", "meaning_notes": ["Preserve the refusal to abandon the other speaker."]},
+        {"id": "strip-3", "source_text": "걱정하지 마. 곧 따라갈게.", "font": "ko", "font_size": 50, "box": [90, 2100, 1020, 300], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 2, "reference_translation": "Do not worry. I will follow soon.", "meaning_notes": ["Speaker A promises to follow, not to lead."]},
+        {"id": "strip-4", "source_text": "약속이야.", "font": "ko", "font_size": 58, "box": [90, 3080, 1020, 300], "role": "dialogue", "speaker": "Yuna", "include": true, "reading_order": 3, "reference_translation": "Promise me.", "meaning_notes": ["A contextual promise exchange; a literal 'It is a promise' is also acceptable if the relationship remains clear."]}
+      ]
+    },
+    {
+      "id": "12-spread-rtl", "width": 2400, "height": 1600,
+      "coverage": ["double-page spread", "right-to-left order", "cross-panel speaker order", "Japanese"],
+      "regions": [
+        {"id": "spread-right", "source_text": "ユナ、橋を渡れ！\n振り返るな！", "font": "ja", "font_size": 58, "box": [1320, 220, 960, 500], "role": "dialogue", "speaker": "A", "include": true, "reading_order": 0, "reference_translation": "Yuna, cross the bridge! Do not look back!", "meaning_notes": ["Read the right panel first and preserve the prohibition."]},
+        {"id": "spread-left", "source_text": "必ず戻ってきてね。", "font": "ja", "font_size": 58, "box": [120, 830, 960, 470], "role": "dialogue", "speaker": "Yuna", "include": true, "reading_order": 1, "reference_translation": "Make sure you come back.", "meaning_notes": ["Yuna addresses the other person; do not change this into her own promise to return."]}
+      ]
+    }
+  ]
+}

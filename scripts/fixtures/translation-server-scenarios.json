@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "scenarios": {
+    "success": [
+      {
+        "steps": [
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "delayed-success": [
+      {
+        "steps": [
+          {
+            "action": "success",
+            "delay_ms": 10000
+          }
+        ]
+      }
+    ],
+    "retry-429-503": [
+      {
+        "steps": [
+          {
+            "action": "rate_limit",
+            "retry_after_seconds": 1
+          },
+          {
+            "action": "unavailable",
+            "retry_after_seconds": 1
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "partial-once": [
+      {
+        "min_pages": 2,
+        "steps": [
+          {
+            "action": "partial",
+            "keep_pages": 1
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "halving-content": [
+      {
+        "min_pages": 2,
+        "steps": [
+          {
+            "action": "body_error"
+          }
+        ]
+      },
+      {
+        "max_pages": 1,
+        "steps": [
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "malformed-once": [
+      {
+        "steps": [
+          {
+            "action": "malformed"
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "body-error-once": [
+      {
+        "steps": [
+          {
+            "action": "body_error"
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "bad-request-once": [
+      {
+        "steps": [
+          {
+            "action": "bad_request"
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "review-repair": [
+      {
+        "review": true,
+        "steps": [
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "review-malformed": [
+      {
+        "review": true,
+        "steps": [
+          {
+            "action": "malformed"
+          }
+        ]
+      }
+    ],
+    "review-delay": [
+      {
+        "review": true,
+        "steps": [
+          {
+            "action": "success",
+            "delay_ms": 5000
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ],
+    "review-cas-delay": [
+      {
+        "review": true,
+        "steps": [
+          {
+            "action": "success",
+            "delay_ms": 5000
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ]
+  }
+}

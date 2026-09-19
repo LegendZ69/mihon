@@ -1,0 +1,58 @@
+{
+  "imageId": "11",
+  "imageHash": "708b8d6494e668ec2ec6f0da5caa2c2765dfba732787d8eee985fa14bc6d3f76",
+  "width": 2400,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "11:region-0",
+      "points": [
+        {
+          "x": 1572,
+          "y": 404.838
+        },
+        {
+          "x": 2035.2,
+          "y": 404.838
+        },
+        {
+          "x": 2035.2,
+          "y": 534.786
+        },
+        {
+          "x": 1572,
+          "y": 534.786
+        }
+      ],
+      "sourceText": "ユナ、橋を渡れ！\n振り返るな！",
+      "translatedText": "Yuna, cross the bridge!\nDon't look back!",
+      "aiConfidence": 0.98
+    },
+    {
+      "id": "11:region-1",
+      "points": [
+        {
+          "x": 345.6,
+          "y": 1037.413
+        },
+        {
+          "x": 856.8,
+          "y": 1037.413
+        },
+        {
+          "x": 856.8,
+          "y": 1094.7521
+        },
+        {
+          "x": 345.6,
+          "y": 1094.7521
+        }
+      ],
+      "sourceText": "必ず戻ってきてね。",
+      "translatedText": "Make sure you come back.",
+      "readingOrder": 1
+    }
+  ],
+  "detectedLanguage": "ja",
+  "revision": 1789151965351
+}

@@ -1,0 +1,160 @@
+{
+  "source": "Original controlled validation fixtures, no user manga",
+  "archive": "build/translator/validation/k90/sfx/baseline-replay-after-inspector-controls/evidence.zip",
+  "archive_sha256": "e70406f27556e7f70d372b900c39c326f504f4e84fd545a62441f1d6a4789252",
+  "expectation_method": "Independent Pillow full-image RGBA pixels in original-coordinate 5x5 corner neighborhoods; quantized channel high nibbles; modal bin",
+  "scope": "Exact expected colors apply when decoded at original resolution. Larger sources may use bounded downsampling, retaining source-coordinate correspondence.",
+  "cases": [
+    {
+      "asset": "controlled-page-01",
+      "image_id": "0",
+      "image_sha256": "080d1c771e309e331f84699254d4ae5e7c52c0d6830e55253f932bbcde685246",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965332,
+      "expected_corner_colors": {
+        "0:region-0": "fff0f0f0",
+        "0:region-1": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-02",
+      "image_id": "1",
+      "image_sha256": "f3ca4844e58dad7c2747ebcfb16399743cab45e7ba3324039bb14f92b2402b49",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965333,
+      "expected_corner_colors": {
+        "1:region-0": "fff0f0f0",
+        "1:region-1": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-03",
+      "image_id": "2",
+      "image_sha256": "e00913ef3900fef4ae030a94b14d1d807e0a9a7b62493b371c475b7ad33ea30e",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965335,
+      "expected_corner_colors": {
+        "2:region-0": "fff0f0f0",
+        "2:region-1": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-04",
+      "image_id": "3",
+      "image_sha256": "5b622a96eb34fd46e7038c1ea2abce8f9a2c1c96a4fd0e389abe97ccb646bd0e",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965337,
+      "expected_corner_colors": {
+        "3:region-0": "fff0f0f0",
+        "3:region-1": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-05",
+      "image_id": "4",
+      "image_sha256": "4df2188c319afaf90f8b0e947df081c0a3cc99ebe8dd564c9a3b2ef24834b5ce",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965339,
+      "expected_corner_colors": {
+        "4:region-0": "fff0f0f0",
+        "4:region-1": "fff0f0f0",
+        "4:region-2": "fff0f0f0",
+        "4:region-3": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-06",
+      "image_id": "5",
+      "image_sha256": "76f2a9158211aa1af03ff7ecde39d94c633433e0a9b5b6cf86da1fd59efb3841",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965341,
+      "expected_corner_colors": {
+        "5:region-0": "fff0f0f0",
+        "5:region-1": "fff0f0f0",
+        "5:region-2": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-07",
+      "image_id": "6",
+      "image_sha256": "caa85f68b36c050d3182a0ec46f69ccca96050aaf7c9642cb4367f94efbff384",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965342,
+      "expected_corner_colors": {
+        "6:region-0": "fff0f0f0",
+        "6:region-1": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-08",
+      "image_id": "7",
+      "image_sha256": "8ec84f9854dc46f072ec7e4587e93f69a02c14f7495d1a71e1a245ee4ebbeb14",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965344,
+      "expected_corner_colors": {
+        "7:region-0": "fff0f0f0",
+        "7:region-1": "fff0f0f0",
+        "7:region-2": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-09",
+      "image_id": "8",
+      "image_sha256": "a6af0e90fe8af38c40a5b7ac2cbcb1a00a56dd811063970ec807dcbc38fab717",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965346,
+      "expected_corner_colors": {
+        "8:region-0": "fff0f0f0",
+        "8:region-1": "fff0f0f0",
+        "8:region-2": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-10",
+      "image_id": "9",
+      "image_sha256": "76441e504c8cda7db9a81b369ee9a1e4dfd9ffb39f78b6352981527cd5cb05dd",
+      "width": 1200,
+      "height": 1600,
+      "saved_result_revision": 1789151965348,
+      "expected_corner_colors": {}
+    },
+    {
+      "asset": "controlled-page-11",
+      "image_id": "10",
+      "image_sha256": "6493ca6dfb50a0032a66d74baaa04056af250e9c966e9e7dbec802c591e0a36a",
+      "width": 1200,
+      "height": 3600,
+      "saved_result_revision": 1789151965350,
+      "expected_corner_colors": {
+        "10:region-0": "fff0f0f0",
+        "10:region-1": "fff0f0f0",
+        "10:region-2": "fff0f0f0",
+        "10:region-3": "fff0f0f0"
+      }
+    },
+    {
+      "asset": "controlled-page-12",
+      "image_id": "11",
+      "image_sha256": "708b8d6494e668ec2ec6f0da5caa2c2765dfba732787d8eee985fa14bc6d3f76",
+      "width": 2400,
+      "height": 1600,
+      "saved_result_revision": 1789151965351,
+      "expected_corner_colors": {
+        "11:region-0": "fff0f0f0",
+        "11:region-1": "fff0f0f0"
+      }
+    }
+  ],
+  "reader_cbz_asset": "controlled-chapter002.cbz",
+  "reader_cbz_sha256": "8c5510c274704a2760ad877df9f3354638fa0665fd11e79e76f722085088b459",
+  "reader_cbz_source": "Exact owned controlled chapter pulled from K90 local source; synthetic fixtures only."
+}

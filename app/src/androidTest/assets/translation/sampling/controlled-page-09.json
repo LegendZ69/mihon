@@ -1,0 +1,91 @@
+{
+  "imageId": "8",
+  "imageHash": "a6af0e90fe8af38c40a5b7ac2cbcb1a00a56dd811063970ec807dcbc38fab717",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "8:region-0",
+      "points": [
+        {
+          "x": 369.6,
+          "y": 169.6
+        },
+        {
+          "x": 831.6,
+          "y": 169.6
+        },
+        {
+          "x": 831.6,
+          "y": 265.6
+        },
+        {
+          "x": 369.6,
+          "y": 265.6
+        }
+      ],
+      "sourceText": "ADVERTISEMENT\nBuy a subscription today",
+      "translatedText": "ADVERTISEMENT\nBuy a subscription today",
+      "type": "advertisement",
+      "included": false,
+      "ignoredReason": "advertisement",
+      "aiConfidence": 0.99
+    },
+    {
+      "id": "8:region-1",
+      "points": [
+        {
+          "x": 324,
+          "y": 721.6
+        },
+        {
+          "x": 876,
+          "y": 721.6
+        },
+        {
+          "x": 876,
+          "y": 772.8
+        },
+        {
+          "x": 324,
+          "y": 772.8
+        }
+      ],
+      "sourceText": "그날 밤, 우리는 다시 만났다.",
+      "translatedText": "That night, we met again.",
+      "type": "narration",
+      "readingOrder": 1,
+      "aiConfidence": 0.99
+    },
+    {
+      "id": "8:region-2",
+      "points": [
+        {
+          "x": 656.4,
+          "y": 1307.2
+        },
+        {
+          "x": 1008,
+          "y": 1307.2
+        },
+        {
+          "x": 1008,
+          "y": 1380.8
+        },
+        {
+          "x": 656.4,
+          "y": 1380.8
+        }
+      ],
+      "sourceText": "SAMPLE WATERMARK\nexample.invalid",
+      "translatedText": "SAMPLE WATERMARK\nexample.invalid",
+      "type": "watermark",
+      "readingOrder": 2,
+      "included": false,
+      "ignoredReason": "watermark",
+      "aiConfidence": 0.99
+    }
+  ],
+  "detectedLanguage": "ko",
+  "revision": 1789151965346
+}

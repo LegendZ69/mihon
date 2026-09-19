@@ -1,0 +1,30 @@
+{
+  "format": "mihon-structured-translations",
+  "version": 1,
+  "pages": [
+    {
+      "imageId": "my-page-identifier",
+      "width": 1200,
+      "height": 1600,
+      "coordinateSpace": "original_pixels",
+      "detectedLanguage": "ja",
+      "regions": [
+        {
+          "id": "sign-1",
+          "sourceText": "出口",
+          "translatedText": "Exit",
+          "type": "sign",
+          "readingOrder": 0,
+          "rotation": 0,
+          "included": true,
+          "points": [
+            {"x": 100, "y": 120},
+            {"x": 280, "y": 120},
+            {"x": 280, "y": 190},
+            {"x": 100, "y": 190}
+          ]
+        }
+      ]
+    }
+  ]
+}

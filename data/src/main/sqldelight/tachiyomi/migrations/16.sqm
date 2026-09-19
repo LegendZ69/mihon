@@ -1,0 +1,9 @@
+CREATE TABLE translation_reviews (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE INDEX translation_reviews_page ON translation_reviews(job_id, image_id);

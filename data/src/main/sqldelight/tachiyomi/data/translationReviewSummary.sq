@@ -1,0 +1,19 @@
+latestReviewSummaries:
+SELECT review.id,
+       review.job_id,
+       review.image_id,
+       CAST(COALESCE(json_extract(review.payload, '$.state'), 'QUEUED') AS TEXT) AS state,
+       review.updated_at,
+       CAST(json_extract(review.payload, '$.message') AS TEXT) AS message,
+       CAST(COALESCE(json_extract(review.payload, '$.findings'), '[]') AS TEXT) AS findings
+FROM translation_reviews AS review
+WHERE (:jobId IS NULL OR review.job_id = :jobId)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM translation_reviews AS newer
+    WHERE newer.job_id = review.job_id
+      AND newer.image_id = review.image_id
+      AND (newer.updated_at > review.updated_at
+        OR (newer.updated_at = review.updated_at AND newer.id < review.id))
+  )
+ORDER BY review.job_id, review.image_id;

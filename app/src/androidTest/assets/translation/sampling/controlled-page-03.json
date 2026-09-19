@@ -1,0 +1,59 @@
+{
+  "imageId": "2",
+  "imageHash": "e00913ef3900fef4ae030a94b14d1d807e0a9a7b62493b371c475b7ad33ea30e",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "2:region-0",
+      "points": [
+        {
+          "x": 357.6,
+          "y": 312
+        },
+        {
+          "x": 847.2,
+          "y": 312
+        },
+        {
+          "x": 847.2,
+          "y": 430.4
+        },
+        {
+          "x": 357.6,
+          "y": 430.4
+        }
+      ],
+      "sourceText": "尤娜，别打开那扇门！\n敌人还在外面。",
+      "translatedText": "Yuna, don't open that door!\nThe enemy is still outside.",
+      "aiConfidence": 1
+    },
+    {
+      "id": "2:region-1",
+      "points": [
+        {
+          "x": 405.6,
+          "y": 1030.4
+        },
+        {
+          "x": 794.4,
+          "y": 1030.4
+        },
+        {
+          "x": 794.4,
+          "y": 1147.2
+        },
+        {
+          "x": 405.6,
+          "y": 1147.2
+        }
+      ],
+      "sourceText": "我们只剩三分钟。\n不要把药交给他。",
+      "translatedText": "We only have three minutes left.\nDon't give the medicine to him.",
+      "readingOrder": 1,
+      "aiConfidence": 1
+    }
+  ],
+  "detectedLanguage": "zh-Hans",
+  "revision": 1789151965335
+}

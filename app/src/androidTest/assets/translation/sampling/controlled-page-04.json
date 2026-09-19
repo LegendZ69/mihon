@@ -1,0 +1,59 @@
+{
+  "imageId": "3",
+  "imageHash": "5b622a96eb34fd46e7038c1ea2abce8f9a2c1c96a4fd0e389abe97ccb646bd0e",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "3:region-0",
+      "points": [
+        {
+          "x": 355.2,
+          "y": 312
+        },
+        {
+          "x": 846,
+          "y": 312
+        },
+        {
+          "x": 846,
+          "y": 427.2
+        },
+        {
+          "x": 355.2,
+          "y": 427.2
+        }
+      ],
+      "sourceText": "尤娜，別打開那扇門！\n敵人還在外面。",
+      "translatedText": "Yuna, don't open that door!\nThe enemy is still outside.",
+      "type": "narration"
+    },
+    {
+      "id": "3:region-1",
+      "points": [
+        {
+          "x": 379.2,
+          "y": 1033.6
+        },
+        {
+          "x": 818.4,
+          "y": 1033.6
+        },
+        {
+          "x": 818.4,
+          "y": 1147.2
+        },
+        {
+          "x": 379.2,
+          "y": 1147.2
+        }
+      ],
+      "sourceText": "如果我沒回來，\n就帶妹妹離開這裡。",
+      "translatedText": "If I don't come back,\ntake your sister and leave this place.",
+      "type": "narration",
+      "readingOrder": 1
+    }
+  ],
+  "detectedLanguage": "zh",
+  "revision": 1789151965337
+}

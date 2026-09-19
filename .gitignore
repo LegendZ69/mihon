@@ -15,3 +15,9 @@ local.properties
 
 # macOS specific files
 .DS_Store
+
+# Local validation caches and signing material
+__pycache__/
+*.py[cod]
+*.keystore
+*.jks

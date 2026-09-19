@@ -238,6 +238,8 @@ fun LibraryBottomActionMenu(
     onDeleteClicked: () -> Unit,
     onMigrateClicked: () -> Unit,
     modifier: Modifier = Modifier,
+    onTranslateClicked: (() -> Unit)? = null,
+    translationControl: mihon.feature.translation.ui.TranslationControlSummary? = null,
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -262,90 +264,109 @@ fun LibraryBottomActionMenu(
                     if (isActive) confirm[toConfirmIndex] = false
                 }
             }
-            val itemOverflow = onDownloadClicked != null
-            Row(
-                modifier = Modifier
-                    .windowInsetsPadding(
-                        WindowInsets.navigationBars
-                            .only(WindowInsetsSides.Bottom),
-                    )
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-            ) {
-                Button(
-                    title = stringResource(MR.strings.action_move_category),
-                    icon = MaterialSymbols.AutoMirroredRounded.Label,
-                    toConfirm = confirm[0],
-                    onLongClick = { onLongClickItem(0) },
-                    onClick = onChangeCategoryClicked,
-                )
-                Button(
-                    title = stringResource(MR.strings.action_mark_as_read),
-                    icon = MaterialSymbols.Rounded.DoneAll,
-                    toConfirm = confirm[1],
-                    onLongClick = { onLongClickItem(1) },
-                    onClick = onMarkAsReadClicked,
-                )
-                Button(
-                    title = stringResource(MR.strings.action_mark_as_unread),
-                    icon = MaterialSymbols.Rounded.RemoveDone,
-                    toConfirm = confirm[2],
-                    onLongClick = { onLongClickItem(2) },
-                    onClick = onMarkAsUnreadClicked,
-                )
-                if (onDownloadClicked != null) {
-                    var downloadExpanded by remember { mutableStateOf(false) }
-                    Button(
-                        title = stringResource(MR.strings.action_download),
-                        icon = MaterialSymbols.Rounded.Download,
-                        toConfirm = confirm[3],
-                        onLongClick = { onLongClickItem(3) },
-                        onClick = { downloadExpanded = !downloadExpanded },
-                    ) {
-                        DownloadDropdownMenu(
-                            expanded = downloadExpanded,
-                            onDismissRequest = { downloadExpanded = false },
-                            onDownloadClicked = onDownloadClicked,
-                            offset = BottomBarMenuDpOffset,
-                        )
-                    }
-                }
-                if (!itemOverflow) {
-                    Button(
-                        title = stringResource(MR.strings.migrate),
-                        icon = MaterialSymbols.Rounded.SwapCalls,
-                        toConfirm = confirm[4],
-                        onLongClick = { onLongClickItem(4) },
-                        onClick = onMigrateClicked,
-                    )
-                    Button(
-                        title = stringResource(MR.strings.action_delete),
-                        icon = MaterialSymbols.Rounded.Delete,
-                        toConfirm = confirm[5],
-                        onLongClick = { onLongClickItem(5) },
-                        onClick = onDeleteClicked,
-                    )
-                } else {
-                    var overflowMenuOpen by remember { mutableStateOf(false) }
-                    Button(
-                        title = stringResource(MR.strings.label_more),
-                        icon = MaterialSymbols.Rounded.MoreVert,
-                        toConfirm = false,
-                        onLongClick = {},
-                        onClick = { overflowMenuOpen = true },
-                    ) {
-                        DropdownMenu(
-                            expanded = overflowMenuOpen,
-                            onDismissRequest = { overflowMenuOpen = false },
-                            offset = BottomBarMenuDpOffset,
+            val itemOverflow = onDownloadClicked != null || onTranslateClicked != null
+            Column {
+                if (onTranslateClicked != null && translationControl != null) {
+                    mihon.feature.translation.ui.TranslationProgressButton(
+                        translationControl,
+                        onTranslateClicked,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        label = if (translationControl.active ||
+                            translationControl.complete
                         ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(MR.strings.migrate)) },
-                                onClick = onMigrateClicked,
+                            translationControl.actionLabel
+                        } else {
+                            "Translate selected series"
+                        },
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .windowInsetsPadding(
+                            WindowInsets.navigationBars
+                                .only(WindowInsetsSides.Bottom),
+                        )
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                ) {
+                    Button(
+                        title = stringResource(MR.strings.action_move_category),
+                        icon = MaterialSymbols.AutoMirroredRounded.Label,
+                        toConfirm = confirm[0],
+                        onLongClick = { onLongClickItem(0) },
+                        onClick = onChangeCategoryClicked,
+                    )
+                    Button(
+                        title = stringResource(MR.strings.action_mark_as_read),
+                        icon = MaterialSymbols.Rounded.DoneAll,
+                        toConfirm = confirm[1],
+                        onLongClick = { onLongClickItem(1) },
+                        onClick = onMarkAsReadClicked,
+                    )
+                    Button(
+                        title = stringResource(MR.strings.action_mark_as_unread),
+                        icon = MaterialSymbols.Rounded.RemoveDone,
+                        toConfirm = confirm[2],
+                        onLongClick = { onLongClickItem(2) },
+                        onClick = onMarkAsUnreadClicked,
+                    )
+                    if (onDownloadClicked != null) {
+                        var downloadExpanded by remember { mutableStateOf(false) }
+                        Button(
+                            title = stringResource(MR.strings.action_download),
+                            icon = MaterialSymbols.Rounded.Download,
+                            toConfirm = confirm[3],
+                            onLongClick = { onLongClickItem(3) },
+                            onClick = { downloadExpanded = !downloadExpanded },
+                        ) {
+                            DownloadDropdownMenu(
+                                expanded = downloadExpanded,
+                                onDismissRequest = { downloadExpanded = false },
+                                onDownloadClicked = onDownloadClicked,
+                                offset = BottomBarMenuDpOffset,
                             )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(MR.strings.action_delete)) },
-                                onClick = onDeleteClicked,
-                            )
+                        }
+                    }
+                    if (!itemOverflow) {
+                        Button(
+                            title = stringResource(MR.strings.migrate),
+                            icon = MaterialSymbols.Rounded.SwapCalls,
+                            toConfirm = confirm[4],
+                            onLongClick = { onLongClickItem(4) },
+                            onClick = onMigrateClicked,
+                        )
+                        Button(
+                            title = stringResource(MR.strings.action_delete),
+                            icon = MaterialSymbols.Rounded.Delete,
+                            toConfirm = confirm[5],
+                            onLongClick = { onLongClickItem(5) },
+                            onClick = onDeleteClicked,
+                        )
+                    } else {
+                        var overflowMenuOpen by remember { mutableStateOf(false) }
+                        Button(
+                            title = stringResource(MR.strings.label_more),
+                            icon = MaterialSymbols.Rounded.MoreVert,
+                            toConfirm = false,
+                            onLongClick = {},
+                            onClick = { overflowMenuOpen = true },
+                        ) {
+                            DropdownMenu(
+                                expanded = overflowMenuOpen,
+                                onDismissRequest = { overflowMenuOpen = false },
+                                offset = BottomBarMenuDpOffset,
+                            ) {
+                                onTranslateClicked?.let {
+                                    DropdownMenuItem(text = { Text("Translate selected series") }, onClick = it)
+                                }
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(MR.strings.migrate)) },
+                                    onClick = onMigrateClicked,
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(MR.strings.action_delete)) },
+                                    onClick = onDeleteClicked,
+                                )
+                            }
                         }
                     }
                 }

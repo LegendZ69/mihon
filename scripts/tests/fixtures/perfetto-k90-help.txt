@@ -1,0 +1,63 @@
+
+Usage: perfetto
+  --background     -d      : Exits immediately and continues in the background.
+                             Prints the PID of the bg process. The printed PID
+                             can used to gracefully terminate the tracing
+                             session by issuing a `kill -TERM $PRINTED_PID`.
+  --background-wait -D     : Like --background, but waits (up to 30s) for all
+                             data sources to be started before exiting. Exit
+                             code is zero if a successful acknowledgement is
+                             received, non-zero otherwise (error or timeout).
+  --clone TSID             : Creates a read-only clone of an existing tracing
+                             session, identified by its ID (see --query).
+  --clone-by-name NAME     : Creates a read-only clone of an existing tracing
+                             session, identified by its unique_session_name in
+                             the config.
+  --clone-for-bugreport    : Can only be used with --clone. It disables the
+                             trace_filter on the cloned session.
+  --config         -c      : /path/to/trace/config/file or - for stdin
+  --out            -o      : /path/to/out/trace/file or - for stdout
+                             If using CLONE_SNAPSHOT triggers, each snapshot
+                             will be saved in a new file with a counter suffix
+                             (e.g., file.0, file.1, file.2).
+  --txt                    : Parse config as pbtxt. Not for production use.
+                             Not a stable API.
+  --query [--long]         : Queries the service state and prints it as
+                             human-readable text. --long allows the output to
+                             extend past 80 chars.
+  --query-raw              : Like --query, but prints raw proto-encoded bytes
+                             of tracing_service_state.proto.
+  --load-inode-file-hash   : Load the IO Inode number and filename mapping
+                             relationship table. Version: 2
+  --help           -h
+
+Light configuration flags: (only when NOT using -c/--config)
+  --time           -t      : Trace duration N[s,m,h] (default: 10s)
+  --buffer         -b      : Ring buffer size N[mb,gb] (default: 32mb)
+  --size           -s      : Max file size N[mb,gb]
+                            (default: in-memory ring-buffer only)
+  --app            -a      : Android (atrace) app name
+  FTRACE_GROUP/FTRACE_NAME : Record ftrace event (e.g. sched/sched_switch)
+  ATRACE_CAT               : Record ATRACE_CAT (e.g. wm) (Android only)
+
+Statsd-specific and other Android-only flags:
+  --alert-id           : ID of the alert that triggered this trace.
+  --config-id          : ID of the triggering config.
+  --config-uid         : UID of app which registered the config.
+  --subscription-id    : ID of the subscription that triggered this trace.
+  --upload             : Upload trace.
+  --dropbox        TAG : DEPRECATED: Use --upload instead
+                         TAG should always be set to 'perfetto'.
+  --save-for-bugreport : If a trace with bugreport_score > 0 is running, it
+                         saves it into a file. Outputs the path when done.
+  --no-guardrails      : Ignore guardrails triggered when using --upload
+                         (testing only).
+  --reset-guardrails   : Resets the state of the guardails and exits
+                         (testing only).
+
+Detach mode. DISCOURAGED, read https://perfetto.dev/docs/concepts/detached-mode
+  --detach=key          : Detach from the tracing session with the given key.
+  --attach=key [--stop] : Re-attach to the session (optionally stop tracing
+                          once reattached).
+  --is_detached=key     : Check if the session can be re-attached.
+                          Exit code:  0:Yes, 2:No, 1:Error.

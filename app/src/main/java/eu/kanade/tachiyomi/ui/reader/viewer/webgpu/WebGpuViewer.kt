@@ -47,15 +47,21 @@ import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
 import eu.kanade.tachiyomi.util.system.createReaderThemeContext
 import eu.kanade.tachiyomi.util.system.readerBackgroundColor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.app.di.appGraph
+import mihon.feature.translation.overlay.readerTranslationDocuments
 import tachiyomi.core.common.util.system.logcat
 import java.util.TreeSet
 import java.util.concurrent.Executors
@@ -349,6 +355,7 @@ open class WebGpuViewer(
         pageCache.remove(pageKey(toRemove))
         decodeQueue.remove(toRemove)
         toRemove.state = PageState.IDLE
+        (toRemove as? ViewerReaderPage)?.translationJob?.cancel()
         (toRemove as? ViewerReaderPage)?.spreadPage?.cleanup()
         toRemove.imagePage.cleanup()
         return true
@@ -573,6 +580,8 @@ open class WebGpuViewer(
     }
 
     inner class ViewerReaderPage(val page: ReaderPage) : ViewerPage() {
+        var translationJob: Job? = null
+
         /** Cached spread ImagePage when this page is the anchor of a dual-page spread */
         var spreadPage: ImagePage.ImageSpread? = null
 
@@ -896,6 +905,7 @@ open class WebGpuViewer(
                 decodeQueue.clear()
                 pageCache.values.forEach {
                     it.state = PageState.IDLE
+                    (it as? ViewerReaderPage)?.translationJob?.cancel()
                     (it as? ViewerReaderPage)?.spreadPage?.cleanup()
                     it.imagePage.cleanup()
                 }
@@ -931,6 +941,7 @@ open class WebGpuViewer(
             decodeQueue.clear()
             pageCache.values.forEach {
                 it.state = PageState.IDLE
+                (it as? ViewerReaderPage)?.translationJob?.cancel()
                 (it as? ViewerReaderPage)?.spreadPage?.cleanup()
                 it.imagePage.cleanup()
             }
@@ -1137,6 +1148,7 @@ open class WebGpuViewer(
                 if (pageInCache(page) && !page.isDecoded && !page.imagePage.destroyed) {
                     val oldImagePage = page.imagePage
                     page.imagePage = imagePage
+                    bindTranslationOverlay(page, imagePage)
                     noteIfLone(page)
                     page.state = PageState.IDLE
                     oldImagePage.cleanup()
@@ -1153,6 +1165,33 @@ open class WebGpuViewer(
                     pager.state.invalidate()
                 } else {
                     if (pageInCache(page)) page.state = PageState.IDLE
+                }
+            }
+        }
+    }
+
+    private fun bindTranslationOverlay(page: ViewerReaderPage, image: ImagePage.ImageSingle) {
+        page.translationJob?.cancel()
+        page.translationJob = scope.launch {
+            readerTranslationDocuments(activity, page.page).collectLatest { document ->
+                try {
+                    val overlay = document?.gpuOverlay()
+                    var transferred = false
+                    try {
+                        withContext(NonCancellable) {
+                            if (synchronized(lock) { pageInCache(page) && page.imagePage === image }) {
+                                image.replaceOverlay(overlay)
+                                transferred = true
+                                pager.state.invalidate()
+                            }
+                        }
+                    } finally {
+                        if (!transferred) withContext(NonCancellable) { overlay?.dispose() }
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    logcat(LogPriority.ERROR, error) { "Translation overlay failed for image ${page.page.index}" }
                 }
             }
         }

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "scenarios": {
+    "recovery-delay": [
+      {
+        "min_pages": 1,
+        "max_pages": 1,
+        "steps": [
+          {
+            "action": "success"
+          },
+          {
+            "action": "success",
+            "delay_ms": 120000
+          },
+          {
+            "action": "success"
+          }
+        ]
+      }
+    ]
+  }
+}

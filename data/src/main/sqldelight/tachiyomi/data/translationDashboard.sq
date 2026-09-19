@@ -1,0 +1,52 @@
+dashboardOperations:
+SELECT id, payload FROM translation_operations
+WHERE updated_at >= :since AND updated_at < :until
+AND (:jobId IS NULL OR job_id = :jobId)
+AND (:afterId IS NULL OR id > :afterId)
+ORDER BY id LIMIT :pageLimit;
+
+dashboardUsage:
+SELECT id, payload FROM translation_usage
+WHERE time >= :since AND time < :until
+AND (:jobId IS NULL OR job_id = :jobId)
+AND (:provider IS NULL OR provider = :provider)
+AND (:model IS NULL OR model = :model)
+AND (:afterId IS NULL OR id > :afterId)
+ORDER BY id LIMIT :pageLimit;
+
+dashboardModels:
+SELECT provider, model FROM translation_usage
+WHERE time >= :since AND time < :until
+AND (:jobId IS NULL OR job_id = :jobId)
+AND (:provider IS NULL OR provider = :provider)
+AND (:model IS NULL OR model = :model)
+GROUP BY provider, model
+ORDER BY provider, model LIMIT :pageLimit OFFSET :pageOffset;
+
+dashboardSavedPages:
+SELECT count(*) FROM (
+    SELECT job_id, image_id FROM translation_operations
+    WHERE updated_at >= :since AND updated_at < :until
+    AND stage = 'SAVE' AND state = 'COMPLETED' AND image_id IS NOT NULL
+    AND (:jobId IS NULL OR job_id = :jobId)
+    AND (:provider IS NULL OR CAST(json_extract(payload, '$.provider') AS TEXT) = :provider)
+    AND (:model IS NULL OR CAST(json_extract(payload, '$.model') AS TEXT) = :model)
+    GROUP BY job_id, image_id
+);
+
+dashboardOperationIdentity:
+SELECT payload FROM translation_operations WHERE id = :id;
+
+dashboardJobSnapshot:
+SELECT payload FROM translation_jobs WHERE id = :id;
+
+geometrySourceRevision:
+SELECT committed_at FROM translation_results WHERE job_id = :jobId AND image_id = :imageId;
+
+dashboardUsageRecords:
+SELECT payload FROM translation_usage
+WHERE time >= :since AND time < :until
+AND (:jobId IS NULL OR job_id = :jobId)
+AND (:provider IS NULL OR provider = :provider)
+AND (:model IS NULL OR model = :model)
+ORDER BY time DESC, id LIMIT :pageLimit OFFSET :pageOffset;

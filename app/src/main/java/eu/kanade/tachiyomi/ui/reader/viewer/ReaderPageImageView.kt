@@ -1,6 +1,8 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Matrix
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.drawable.Animatable
@@ -35,9 +37,18 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
+import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
 import eu.kanade.tachiyomi.util.view.isVisibleOnScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import mihon.feature.translation.overlay.PageImageTransform
+import mihon.feature.translation.overlay.TranslationOverlayDocument
+import mihon.feature.translation.overlay.readerTranslationDocuments
 import okio.BufferedSource
 
 /**
@@ -59,6 +70,97 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private var pageView: View? = null
 
     private var config: Config? = null
+
+    var translationImageTransform: PageImageTransform = PageImageTransform.ORIGINAL
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+    private var translationDocument: TranslationOverlayDocument? = null
+    private var translationPage: ReaderPage? = null
+    private var translationJob: Job? = null
+    private var translationScope: CoroutineScope? = null
+
+    fun bindTranslation(page: ReaderPage) {
+        translationJob?.cancel()
+        translationPage = page
+        translationDocument = null
+        val scope = translationScope ?: MainScope().also { translationScope = it }
+        translationJob = scope.launch {
+            readerTranslationDocuments(context, page).collect {
+                translationDocument = it
+                invalidate()
+            }
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (translationJob == null) translationPage?.let(::bindTranslation)
+    }
+
+    override fun onDetachedFromWindow() {
+        translationJob?.cancel()
+        translationJob = null
+        translationScope?.cancel()
+        translationScope = null
+        translationDocument = null
+        super.onDetachedFromWindow()
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        val document = translationDocument ?: return
+        val view = pageView?.takeIf { it.isVisible } ?: return
+        val mapping = translationImageTransform.map(document.result.width, document.result.height)
+        if (mapping.width <= 0 || mapping.height <= 0) return
+        val matrix = when (view) {
+            is SubsamplingScaleImageView -> {
+                if (!view.isReady) return
+                val crop = view.sourceCrop
+                val sx = view.sourceImageWidth.toFloat() / mapping.width
+                val sy = view.sourceImageHeight.toFloat() / mapping.height
+                val p0 = view.sourceToViewCoord(-crop.left.toFloat(), -crop.top.toFloat()) ?: return
+                val px = view.sourceToViewCoord(sx - crop.left, -crop.top.toFloat()) ?: return
+                val py = view.sourceToViewCoord(-crop.left.toFloat(), sy - crop.top) ?: return
+                Matrix().apply {
+                    setValues(
+                        floatArrayOf(
+                            px.x - p0.x, py.x - p0.x, p0.x + view.left,
+                            px.y - p0.y, py.y - p0.y, p0.y + view.top, 0f, 0f, 1f,
+                        ),
+                    )
+                }
+            }
+            is AppCompatImageView -> {
+                val drawable = view.drawable ?: return
+                Matrix().apply {
+                    setScale(
+                        drawable.intrinsicWidth.toFloat() / mapping.width,
+                        drawable.intrinsicHeight.toFloat() / mapping.height,
+                    )
+                    postConcat(view.imageMatrix)
+                    postTranslate((view.left + view.paddingLeft).toFloat(), (view.top + view.paddingTop).toFloat())
+                }
+            }
+            else -> return
+        }
+        canvas.save()
+        canvas.clipRect(view.left, view.top, view.right, view.bottom)
+        canvas.concat(matrix)
+        mapping.pieces.forEach { piece ->
+            canvas.save()
+            canvas.concat(
+                Matrix().apply {
+                    setValues(floatArrayOf(piece.a, piece.b, piece.c, piece.d, piece.e, piece.f, 0f, 0f, 1f))
+                },
+            )
+            canvas.clipRect(piece.left, piece.top, piece.right, piece.bottom)
+            document.draw(canvas)
+            canvas.restore()
+        }
+        canvas.restore()
+    }
 
     var onImageLoaded: (() -> Unit)? = null
     var onImageLoadError: ((Throwable?) -> Unit)? = null
@@ -84,6 +186,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     @CallSuper
     open fun onScaleChanged(newScale: Float) {
         onScaleChanged?.invoke(newScale)
+        invalidate()
     }
 
     @CallSuper
@@ -161,12 +264,20 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
     }
 
-    fun recycle() = pageView?.let {
-        when (it) {
-            is SubsamplingScaleImageView -> it.recycle()
-            is AppCompatImageView -> it.dispose()
+    fun recycle() {
+        translationJob?.cancel()
+        translationJob = null
+        translationScope?.cancel()
+        translationScope = null
+        translationPage = null
+        translationDocument = null
+        pageView?.let {
+            when (it) {
+                is SubsamplingScaleImageView -> it.recycle()
+                is AppCompatImageView -> it.dispose()
+            }
+            it.isVisible = false
         }
-        it.isVisible = false
     }
 
     /**
@@ -242,7 +353,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     }
 
                     override fun onCenterChanged(newCenter: PointF?, origin: Int) {
-                        // Not used
+                        this@ReaderPageImageView.invalidate()
                     }
                 },
             )
@@ -340,6 +451,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             adjustViewBounds = true
 
             if (this is PhotoView) {
+                setOnMatrixChangeListener { this@ReaderPageImageView.invalidate() }
                 setScaleLevels(1F, 2F, MAX_ZOOM_SCALE)
                 // Force 2 scale levels on double tap
                 setOnDoubleTapListener(

@@ -1,0 +1,60 @@
+{
+  "imageId": "6",
+  "imageHash": "caa85f68b36c050d3182a0ec46f69ccca96050aaf7c9642cb4367f94efbff384",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "6:region-0",
+      "points": [
+        {
+          "x": 450,
+          "y": 337.6
+        },
+        {
+          "x": 746.4,
+          "y": 337.6
+        },
+        {
+          "x": 746.4,
+          "y": 483.2
+        },
+        {
+          "x": 450,
+          "y": 483.2
+        }
+      ],
+      "sourceText": "멈춰! 위험해!",
+      "translatedText": "Stop! It's dangerous!",
+      "rotation": -18,
+      "aiConfidence": 1
+    },
+    {
+      "id": "6:region-1",
+      "points": [
+        {
+          "x": 565.2,
+          "y": 1014.4
+        },
+        {
+          "x": 632.4,
+          "y": 1014.4
+        },
+        {
+          "x": 632.4,
+          "y": 1241.6
+        },
+        {
+          "x": 565.2,
+          "y": 1241.6
+        }
+      ],
+      "sourceText": "逃げて！",
+      "translatedText": "Run!",
+      "readingOrder": 1,
+      "aiConfidence": 1
+    }
+  ],
+  "detectedLanguage": "ko",
+  "revision": 1789151965342
+}

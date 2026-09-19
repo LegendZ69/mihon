@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mihon portable structured translations, version 1",
+  "type": "object",
+  "required": ["format", "version", "pages"],
+  "properties": {
+    "format": {"const": "mihon-structured-translations"},
+    "version": {"const": 1},
+    "pages": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "required": ["imageId", "regions"],
+        "properties": {
+          "imageId": {"type": "string", "minLength": 1},
+          "imageHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "width": {"type": "integer", "minimum": 1},
+          "height": {"type": "integer", "minimum": 1},
+          "coordinateSpace": {"const": "original_pixels"},
+          "detectedLanguage": {"type": ["string", "null"]},
+          "regions": {
+            "type": "array", "maxItems": 10000,
+            "items": {
+              "type": "object", "required": ["id", "translatedText"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "sourceText": {"type": "string"},
+                "translatedText": {"type": "string"},
+                "correctedText": {"type": ["string", "null"]},
+                "type": {"type": "string"},
+                "readingOrder": {"type": "integer", "minimum": 0},
+                "rotation": {"type": "number", "minimum": -360, "maximum": 360},
+                "included": {"type": "boolean"},
+                "ignoredReason": {"type": ["string", "null"]},
+                "aiConfidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                "points": {
+                  "type": "array", "minItems": 3, "maxItems": 256,
+                  "items": {
+                    "type": "object", "required": ["x", "y"],
+                    "properties": {"x": {"type": "number", "minimum": 0}, "y": {"type": "number", "minimum": 0}}
+                  }
+                }
+              },
+              "dependentRequired": {"points": ["sourceText"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

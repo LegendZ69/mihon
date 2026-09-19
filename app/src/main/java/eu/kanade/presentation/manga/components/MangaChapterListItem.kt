@@ -29,11 +29,13 @@ import androidx.compose.ui.unit.dp
 import eu.kanade.tachiyomi.data.download.model.Download
 import me.saket.swipe.SwipeableActionsBox
 import mihon.icons.materialsymbols.MaterialSymbols
+import mihon.icons.materialsymbols.automirroredrounded.FormatListBulleted
 import mihon.icons.materialsymbols.rounded.BookmarkAdd
 import mihon.icons.materialsymbols.rounded.BookmarkRemove
 import mihon.icons.materialsymbols.rounded.Delete
 import mihon.icons.materialsymbols.rounded.Done
 import mihon.icons.materialsymbols.rounded.Download
+import mihon.icons.materialsymbols.rounded.EditNote
 import mihon.icons.materialsymbols.rounded.FileDownloadOff
 import mihon.icons.materialsymbols.rounded.RemoveDone
 import mihon.icons.materialsymbols.roundedfilled.Bookmark
@@ -64,6 +66,8 @@ fun MangaChapterListItem(
     onDownloadClick: ((ChapterDownloadAction) -> Unit)?,
     onChapterSwipe: (LibraryPreferences.ChapterSwipeAction) -> Unit,
     modifier: Modifier = Modifier,
+    swipesEnabled: Boolean = true,
+    translationAction: (@Composable () -> Unit)? = null,
 ) {
     val start = getSwipeAction(
         action = chapterSwipeStartAction,
@@ -84,8 +88,8 @@ fun MangaChapterListItem(
 
     SwipeableActionsBox(
         modifier = Modifier.clipToBounds(),
-        startActions = listOfNotNull(start),
-        endActions = listOfNotNull(end),
+        startActions = if (swipesEnabled) listOfNotNull(start) else emptyList(),
+        endActions = if (swipesEnabled) listOfNotNull(end) else emptyList(),
         swipeThreshold = swipeActionThreshold,
         backgroundUntilSwipeThreshold = MaterialTheme.colorScheme.surfaceContainerLowest,
     ) {
@@ -169,6 +173,7 @@ fun MangaChapterListItem(
                         }
                     }
                 }
+                translationAction?.invoke()
             }
 
             ChapterDownloadIndicator(
@@ -209,6 +214,16 @@ private fun getSwipeAction(
                 Download.State.QUEUE, Download.State.DOWNLOADING -> MaterialSymbols.Rounded.FileDownloadOff
                 Download.State.DOWNLOADED -> MaterialSymbols.Rounded.Delete
             },
+            background = background,
+            onSwipe = onSwipe,
+        )
+        LibraryPreferences.ChapterSwipeAction.Translate -> swipeAction(
+            icon = MaterialSymbols.Rounded.EditNote,
+            background = background,
+            onSwipe = onSwipe,
+        )
+        LibraryPreferences.ChapterSwipeAction.TranslationQueue -> swipeAction(
+            icon = MaterialSymbols.AutoMirroredRounded.FormatListBulleted,
             background = background,
             onSwipe = onSwipe,
         )

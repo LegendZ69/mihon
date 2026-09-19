@@ -1,7 +1,10 @@
+import com.android.build.api.artifact.ScopedArtifact
+import com.android.build.api.variant.ScopedArtifacts
 import mihon.gradle.Config
 import mihon.gradle.getBuildTime
 import mihon.gradle.getLatestCommitCount
 import mihon.gradle.getLatestCommitSha
+import mihon.gradle.tasks.GenerateInstrumentationKeepRulesTask
 import mihon.gradle.tasks.ReplaceShortcutsPlaceholderTask
 import java.io.FileInputStream
 import java.util.Properties
@@ -29,6 +32,9 @@ val keystorePropertiesFile = rootProject.file("keystore.properties")
 
 android {
     namespace = "eu.kanade.tachiyomi"
+    testBuildType = providers.gradleProperty("translation.testBuildType").getOrElse("debug").also {
+        require(it in setOf("debug", "benchmark")) { "Translation tests may target debug or benchmark only" }
+    }
 
     defaultConfig {
         applicationId = "app.mihon"
@@ -41,6 +47,7 @@ android {
         buildConfigField("String", "BUILD_TIME", "\"${getBuildTime(useLatestCommitTime = false)}\"")
         buildConfigField("boolean", "TELEMETRY_INCLUDED", "${Config.includeTelemetry}")
         buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater}")
+        buildConfigField("boolean", "TRANSLATION_LOCAL_FIXTURES_ENABLED", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -114,6 +121,8 @@ android {
         create("benchmark") {
             initWith(release)
 
+            buildConfigField("boolean", "TRANSLATION_LOCAL_FIXTURES_ENABLED", "true")
+
             versionNameSuffix = "-benchmark"
             applicationIdSuffix = ".benchmark"
 
@@ -122,6 +131,8 @@ android {
     }
 
     sourceSets {
+        getByName("debug").kotlin.directories.add("src/validation/java")
+        getByName("benchmark").kotlin.directories.add("src/validation/java")
         getByName("nightly").res.directories.add("src/debug/res")
         getByName("benchmark").res.directories.add("src/debug/res")
     }
@@ -180,6 +191,32 @@ android {
     }
 }
 
+androidComponents {
+    onVariants(selector().withBuildType("benchmark")) { variant ->
+        variant.androidTest?.let { instrumentation ->
+            val keepRules = tasks.register<GenerateInstrumentationKeepRulesTask>(
+                "generateBenchmarkInstrumentationKeepRules",
+            ) {
+                bootClasspath.set(androidComponents.sdkComponents.bootClasspath)
+                outputFile.set(layout.buildDirectory.file("generated/benchmarkInstrumentation/keep-rules.pro"))
+            }
+            variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(keepRules).toGet(
+                ScopedArtifact.CLASSES,
+                GenerateInstrumentationKeepRulesTask::appJars,
+                GenerateInstrumentationKeepRulesTask::appDirectories,
+            )
+            instrumentation.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(keepRules).toGet(
+                ScopedArtifact.CLASSES,
+                GenerateInstrumentationKeepRulesTask::testJars,
+                GenerateInstrumentationKeepRulesTask::testDirectories,
+            )
+            // Test APK mapping cannot resurrect methods already removed from the target APK.
+            // R8 still optimizes the app; only the actual instrumentation ABI becomes an entry point.
+            variant.proguardFiles.add(keepRules.flatMap { it.outputFile })
+        }
+    }
+}
+
 kotlin {
     compilerOptions {
         freeCompilerArgs.addAll(
@@ -213,6 +250,10 @@ dependencies {
     implementation(projects.core.archive)
     implementation(projects.core.common)
     implementation(projects.core.metro)
+    implementation(projects.core.ocr)
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation("androidx.test:runner:1.7.0")
     implementation(projects.coreMetadata)
     implementation(projects.sourceApi)
     implementation(projects.sourceLocal)
@@ -292,12 +333,9 @@ dependencies {
 
     // Image loading
     implementation(libs.bundles.coil)
-    implementation(libs.subsamplingScaleImageView) {
-        exclude(module = "image-decoder")
-    }
     implementation(libs.image.decoder)
 
-    implementation(libs.webgpuviewer)
+    implementation(projects.core.readerOverlay)
     implementation(libs.kim)
 
     // UI libraries

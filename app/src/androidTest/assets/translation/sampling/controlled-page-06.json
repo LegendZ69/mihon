@@ -1,0 +1,83 @@
+{
+  "imageId": "5",
+  "imageHash": "76f2a9158211aa1af03ff7ecde39d94c633433e0a9b5b6cf86da1fd59efb3841",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "5:region-0",
+      "points": [
+        {
+          "x": 304.8,
+          "y": 273.6
+        },
+        {
+          "x": 396,
+          "y": 273.6
+        },
+        {
+          "x": 396,
+          "y": 296
+        },
+        {
+          "x": 304.8,
+          "y": 296
+        }
+      ],
+      "sourceText": "声を出さないで",
+      "translatedText": "Don't make a sound.",
+      "type": "narration"
+    },
+    {
+      "id": "5:region-1",
+      "points": [
+        {
+          "x": 780,
+          "y": 811.2
+        },
+        {
+          "x": 928.8,
+          "y": 811.2
+        },
+        {
+          "x": 928.8,
+          "y": 836.8
+        },
+        {
+          "x": 780,
+          "y": 836.8
+        }
+      ],
+      "sourceText": "아직 끝나지 않았어.",
+      "translatedText": "It's not over yet.",
+      "type": "narration",
+      "readingOrder": 1
+    },
+    {
+      "id": "5:region-2",
+      "points": [
+        {
+          "x": 495.6,
+          "y": 1265.6
+        },
+        {
+          "x": 704.4,
+          "y": 1265.6
+        },
+        {
+          "x": 704.4,
+          "y": 1296
+        },
+        {
+          "x": 495.6,
+          "y": 1296
+        }
+      ],
+      "sourceText": "别忘了我们的约定。",
+      "translatedText": "Don't forget our promise.",
+      "type": "narration",
+      "readingOrder": 2
+    }
+  ],
+  "revision": 1789151965341
+}

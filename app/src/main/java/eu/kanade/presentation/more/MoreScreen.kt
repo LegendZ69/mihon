@@ -36,6 +36,7 @@ fun MoreScreen(
     incognitoMode: Boolean,
     onIncognitoModeChange: (Boolean) -> Unit,
     onClickDownloadQueue: () -> Unit,
+    onClickTranslator: () -> Unit,
     onClickCategories: () -> Unit,
     onClickStats: () -> Unit,
     onClickDataAndStorage: () -> Unit,
@@ -72,6 +73,15 @@ fun MoreScreen(
             }
 
             item { HorizontalDivider() }
+
+            item {
+                TextPreferenceWidget(
+                    title = "Translator",
+                    subtitle = "Translate chapters · queue · OCR · logs",
+                    icon = MaterialSymbols.Rounded.QueryStats,
+                    onPreferenceClick = onClickTranslator,
+                )
+            }
 
             item {
                 val downloadQueueState = downloadQueueStateProvider()

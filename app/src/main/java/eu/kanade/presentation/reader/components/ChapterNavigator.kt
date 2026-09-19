@@ -60,6 +60,16 @@ enum class ChapterNavigatorType {
     fun isHorizontal() = this in setOf(HORIZONTAL_LTR, HORIZONTAL_RTL)
 }
 
+internal fun createChapterNavigatorSliderState(currentPage: Int, totalPages: Int): SliderState {
+    // The reader reports -1 while chapter pages are loading, before the slider is hidden below.
+    val pageCount = totalPages.coerceAtLeast(1)
+    return SliderState(
+        value = currentPage.coerceIn(1, pageCount).toFloat(),
+        steps = (pageCount - 2).coerceAtLeast(0),
+        valueRange = 1f..pageCount.toFloat(),
+    )
+}
+
 @Composable
 fun ChapterNavigator(
     type: ChapterNavigatorType,
@@ -76,13 +86,10 @@ fun ChapterNavigator(
     val haptic = LocalHapticFeedback.current
 
     val state = remember(totalPages) {
-        SliderState(
-            value = currentPage.toFloat(),
-            steps = totalPages - 2,
-            valueRange = 1f..totalPages.toFloat(),
-        )
+        createChapterNavigatorSliderState(currentPage, totalPages)
     }
-    state.value = currentPage.toFloat()
+    val displayedPage = currentPage.coerceIn(1, totalPages.coerceAtLeast(1))
+    state.value = displayedPage.toFloat()
     state.onValueChange = { onPageIndexChange(it.roundToInt() - 1) }
     state.onValueChangeFinished = onPageIndexChangeFinished
 
@@ -114,7 +121,7 @@ fun ChapterNavigator(
             enabledNext = enabledNext,
             onPreviousChapter = onPreviousChapter,
             enabledPrevious = enabledPrevious,
-            currentPage = currentPage,
+            currentPage = displayedPage,
             totalPages = totalPages,
             interactionSource = interactionSource,
             mainAxisPadding = mainAxisPadding,
@@ -129,7 +136,7 @@ fun ChapterNavigator(
             enabledNext = enabledNext,
             onPreviousChapter = onPreviousChapter,
             enabledPrevious = enabledPrevious,
-            currentPage = currentPage,
+            currentPage = displayedPage,
             totalPages = totalPages,
             interactionSource = interactionSource,
             mainAxisPadding = mainAxisPadding,

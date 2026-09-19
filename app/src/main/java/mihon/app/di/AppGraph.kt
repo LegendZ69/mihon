@@ -89,6 +89,21 @@ interface AppGraph : ViewModelGraph {
     val securityPreferences: SecurityPreferences
     val downloadPreferences: DownloadPreferences
 
+    val translationPreferences: mihon.feature.translation.TranslationPreferences
+    val translationManager: mihon.feature.translation.TranslationManager
+    val translationDashboardRepository: tachiyomi.domain.translation.service.TranslationDashboardRepository
+    val translationAccountingManager: mihon.feature.translation.accounting.TranslationAccountingManager
+    val translationRepository: tachiyomi.domain.translation.service.TranslationRepository
+    val translationArchiveRepository: tachiyomi.domain.translation.service.TranslationArchiveRepository
+    val translationStructuredImportService: mihon.feature.translation.transfer.TranslationStructuredImportService
+    val translationTransferService: mihon.feature.translation.transfer.TranslationTransferService
+    val translationDeletionService: mihon.feature.translation.deletion.TranslationDeletionService
+    val translationNotificationCenter: mihon.feature.translation.TranslationNotificationCenter
+    val translationProvider: mihon.feature.translation.provider.TranslationProviderGateway
+    val translationCredentialVault: mihon.feature.translation.provider.TranslationCredentialVault
+    val translationDiagnostics: mihon.feature.translation.provider.TranslationDiagnosticsStore
+    val paddleModelManager: mihon.feature.translation.ocr.PaddleModelManager
+
     val crashLogUtil: CrashLogUtil
 
     val downloadManager: DownloadManager

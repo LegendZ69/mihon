@@ -614,6 +614,10 @@ class MangaViewModel(
                     action = downloadAction,
                 )
             }
+            // Translation gestures need navigation and run through the screen's durable translation controls.
+            LibraryPreferences.ChapterSwipeAction.Translate,
+            LibraryPreferences.ChapterSwipeAction.TranslationQueue,
+            -> error("Translation chapter swipes must be handled by the screen")
             LibraryPreferences.ChapterSwipeAction.Disabled -> throw IllegalStateException()
         }
     }

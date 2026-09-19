@@ -1,0 +1,25 @@
+{
+  "provider": {
+    "kind": "OPENAI",
+    "credentialId": "fixture",
+    "model": "mihon-fixture",
+    "baseUrl": "http://127.0.0.1:8765/v1",
+    "dialect": "CHAT_COMPLETIONS",
+    "extraHeaders": {"X-Mihon-Fixture-Scenario": "success"},
+    "maxOutputTokens": 8192,
+    "customInputTokenLimit": 65536,
+    "customOutputTokenLimit": 8192,
+    "timeoutSeconds": 30,
+    "totalAttempts": 3,
+    "initialRetryMillis": 100,
+    "maxRetryMillis": 1000
+  },
+  "mode": "CUSTOM",
+  "customBatchSize": 2,
+  "ocr": {"pipeline": "AI", "profile": "SMALL"},
+  "concurrency": {"series": 1, "chapters": 1, "images": 5, "requests": 1, "decodedMemoryMb": 128},
+  "logs": {"enabled": true, "captureRaw": true, "retentionDays": 1, "maxStorageMb": 128},
+  "autoTranslate": false,
+  "chaptersAhead": 0,
+  "wifiOnly": false
+}

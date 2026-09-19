@@ -142,8 +142,32 @@ data object LibraryTab : Tab {
                 )
             },
             bottomBar = {
+                val translationControl = if (state.selectionMode) {
+                    val selectedLibrary = state.selection.mapNotNull {
+                        state.libraryData.favoritesById[it]?.libraryManga
+                    }
+                    val total = selectedLibrary.sumOf {
+                        it.totalChapters
+                    }.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt()
+                    mihon.feature.translation.ui.rememberTranslationControl(
+                        state.selection.toList(),
+                        expectedChapters = total,
+                    )
+                } else {
+                    null
+                }
                 LibraryBottomActionMenu(
                     visible = state.selectionMode,
+                    onTranslateClicked = {
+                        navigator.push(
+                            if (translationControl?.active == true || translationControl?.complete == true) {
+                                mihon.feature.translation.ui.TranslationScreen(state.selection.singleOrNull())
+                            } else {
+                                mihon.feature.translation.ui.TranslationChapterPickerScreen(state.selection.toList())
+                            },
+                        )
+                    },
+                    translationControl = translationControl,
                     onChangeCategoryClicked = viewModel::openChangeCategoryDialog,
                     onMarkAsReadClicked = { viewModel.markReadSelection(true) },
                     onMarkAsUnreadClicked = { viewModel.markReadSelection(false) },

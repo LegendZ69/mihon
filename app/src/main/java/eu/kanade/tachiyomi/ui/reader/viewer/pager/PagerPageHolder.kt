@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import logcat.LogPriority
+import mihon.feature.translation.overlay.PageImageTransform
 import okio.Buffer
 import okio.BufferedSource
 import tachiyomi.core.common.i18n.stringResource
@@ -161,6 +162,7 @@ class PagerPageHolder(
                 Triple(source, isAnimated, background)
             }
             withUIContext {
+                bindTranslation(page)
                 setImage(
                     source,
                     isAnimated,
@@ -186,6 +188,7 @@ class PagerPageHolder(
     }
 
     private fun process(page: ReaderPage, imageSource: BufferedSource): BufferedSource {
+        translationImageTransform = PageImageTransform.ORIGINAL
         if (viewer.config.dualPageRotateToFit) {
             return rotateDualPage(imageSource)
         }
@@ -212,6 +215,8 @@ class PagerPageHolder(
         val isDoublePage = ImageUtil.isWideImage(imageSource)
         return if (isDoublePage) {
             val rotation = if (viewer.config.dualPageRotateToFitInvert) -90f else 90f
+            translationImageTransform =
+                if (rotation > 0) PageImageTransform.ROTATE_CLOCKWISE else PageImageTransform.ROTATE_COUNTERCLOCKWISE
             ImageUtil.rotateImage(imageSource, rotation)
         } else {
             imageSource
@@ -234,6 +239,8 @@ class PagerPageHolder(
             }
         }
 
+        translationImageTransform =
+            if (side == ImageUtil.Side.LEFT) PageImageTransform.LEFT_HALF else PageImageTransform.RIGHT_HALF
         return ImageUtil.splitInHalf(imageSource, side)
     }
 

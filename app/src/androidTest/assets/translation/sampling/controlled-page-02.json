@@ -1,0 +1,59 @@
+{
+  "imageId": "1",
+  "imageHash": "f3ca4844e58dad7c2747ebcfb16399743cab45e7ba3324039bb14f92b2402b49",
+  "width": 1200,
+  "height": 1600,
+  "regions": [
+    {
+      "id": "1:region-0",
+      "points": [
+        {
+          "x": 368.4,
+          "y": 316.8
+        },
+        {
+          "x": 831.6,
+          "y": 316.8
+        },
+        {
+          "x": 831.6,
+          "y": 430.4
+        },
+        {
+          "x": 368.4,
+          "y": 430.4
+        }
+      ],
+      "sourceText": "유나야, 그 문을 열지 마!\n밖에 아직 적이 있어.",
+      "translatedText": "Yuna, don't open that door!\nThere are still enemies outside.",
+      "aiConfidence": 0.99
+    },
+    {
+      "id": "1:region-1",
+      "points": [
+        {
+          "x": 326.4,
+          "y": 1041.6
+        },
+        {
+          "x": 867.6,
+          "y": 1041.6
+        },
+        {
+          "x": 867.6,
+          "y": 1147.2
+        },
+        {
+          "x": 326.4,
+          "y": 1147.2
+        }
+      ],
+      "sourceText": "알았어. 나는 여기서 기다릴게.\n너는 먼저 가.",
+      "translatedText": "Got it. I'll wait here.\nYou go on ahead.",
+      "readingOrder": 1,
+      "aiConfidence": 0.99
+    }
+  ],
+  "detectedLanguage": "ko",
+  "revision": 1789151965333
+}

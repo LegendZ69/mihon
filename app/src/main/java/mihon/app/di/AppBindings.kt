@@ -1,7 +1,6 @@
 package mihon.app.di
 
 import android.content.Context
-import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import app.cash.sqldelight.db.SqlDriver
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteConfiguration
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteDatabaseType
@@ -32,7 +31,7 @@ object AppBindings {
     @SingleIn(AppScope::class)
     fun providesSqlDriver(context: Context): SqlDriver {
         return AndroidxSqliteDriver(
-            driver = BundledSQLiteDriver(),
+            connectionFactory = MihonSqliteConnectionFactory(),
             databaseType = AndroidxSqliteDatabaseType.FileProvider(context, "tachiyomi.db"),
             schema = Database.Schema,
             configuration = AndroidxSqliteConfiguration(

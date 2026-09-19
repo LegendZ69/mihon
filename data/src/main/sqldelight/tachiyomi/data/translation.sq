@@ -1,0 +1,336 @@
+CREATE TABLE translation_jobs (
+    id TEXT NOT NULL PRIMARY KEY,
+    manga_id INTEGER NOT NULL,
+    chapter_id INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE INDEX translation_jobs_chapter ON translation_jobs(chapter_id);
+
+CREATE TABLE translation_images (
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL,
+    image_index INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (job_id, image_id)
+);
+
+CREATE TABLE translation_results (
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL,
+    committed_at INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (job_id, image_id)
+);
+
+CREATE TABLE translation_batches (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE translation_events (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    time INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    operation_id TEXT,
+    batch_id TEXT,
+    image_id TEXT,
+    stage TEXT NOT NULL DEFAULT 'legacy',
+    level TEXT NOT NULL DEFAULT 'INFO'
+);
+
+CREATE INDEX translation_events_job_time ON translation_events(job_id, time);
+CREATE INDEX translation_events_operation ON translation_events(operation_id, time DESC);
+CREATE INDEX translation_events_batch ON translation_events(job_id, batch_id, time DESC);
+CREATE INDEX translation_events_image ON translation_events(job_id, image_id, time DESC);
+
+CREATE TABLE translation_reviews (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE INDEX translation_reviews_page ON translation_reviews(job_id, image_id);
+
+CREATE TABLE translation_operations (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    parent_id TEXT,
+    batch_id TEXT,
+    image_id TEXT,
+    stage TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX translation_operations_job ON translation_operations(job_id, updated_at DESC);
+CREATE INDEX translation_operations_parent ON translation_operations(parent_id, updated_at);
+CREATE INDEX translation_operations_image ON translation_operations(job_id, image_id);
+
+CREATE TABLE translation_usage (
+    id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    time INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX translation_usage_time ON translation_usage(time DESC);
+CREATE INDEX translation_usage_job ON translation_usage(job_id, time DESC);
+
+CREATE TABLE translation_billing (
+    id TEXT NOT NULL PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    synced_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX translation_billing_connection ON translation_billing(connection_id, period_start);
+
+jobs:
+SELECT payload FROM translation_jobs ORDER BY priority DESC, updated_at ASC;
+
+upsertJob:
+INSERT INTO translation_jobs VALUES (:id, :mangaId, :chapterId, :priority, :updatedAt, :payload)
+ON CONFLICT(id) DO UPDATE SET priority = :priority, updated_at = :updatedAt, payload = :payload;
+
+deleteJob:
+DELETE FROM translation_jobs WHERE id = :id;
+
+images:
+SELECT payload FROM translation_images WHERE job_id = :jobId ORDER BY image_index;
+
+upsertImage:
+INSERT INTO translation_images VALUES (:jobId, :imageId, :imageIndex, :payload)
+ON CONFLICT(job_id, image_id) DO UPDATE SET image_index = :imageIndex, payload = :payload;
+
+results:
+SELECT payload FROM translation_results WHERE job_id = :jobId;
+
+chapterResults:
+SELECT r.payload FROM translation_results r
+JOIN translation_jobs j ON j.id = r.job_id
+WHERE j.chapter_id = :chapterId
+ORDER BY r.committed_at DESC;
+
+upsertResult:
+INSERT INTO translation_results VALUES (:jobId, :imageId, :committedAt, :payload)
+ON CONFLICT(job_id, image_id) DO UPDATE SET committed_at = :committedAt, payload = :payload;
+
+deleteResults:
+DELETE FROM translation_results WHERE job_id = :jobId;
+
+batches:
+SELECT payload FROM translation_batches WHERE job_id = :jobId;
+
+upsertBatch:
+INSERT INTO translation_batches VALUES (:id, :jobId, :payload)
+ON CONFLICT(id) DO UPDATE SET payload = :payload;
+
+events:
+SELECT payload FROM translation_events
+WHERE (:jobId IS NULL OR job_id = :jobId)
+ORDER BY time DESC;
+
+insertEvent:
+INSERT OR REPLACE INTO translation_events (id, job_id, time, payload, operation_id, batch_id, image_id, stage, level)
+VALUES (:id, :jobId, :time, :payload, :operationId, :batchId, :imageId, :stage, :level);
+
+deleteEvents:
+DELETE FROM translation_events WHERE time < :before;
+
+reviews:
+SELECT payload FROM translation_reviews
+WHERE (:jobId IS NULL OR job_id = :jobId)
+ORDER BY updated_at DESC, id;
+
+upsertReview:
+INSERT INTO translation_reviews VALUES (:id, :jobId, :imageId, :updatedAt, :payload)
+ON CONFLICT(id) DO UPDATE SET updated_at = :updatedAt, payload = :payload;
+
+deleteReviews:
+DELETE FROM translation_reviews WHERE job_id = :jobId;
+
+operations:
+SELECT payload FROM translation_operations
+WHERE (:jobId IS NULL OR job_id = :jobId)
+ORDER BY updated_at DESC LIMIT :pageLimit OFFSET :pageOffset;
+
+filteredOperations:
+SELECT payload FROM translation_operations
+WHERE (:jobId IS NULL OR job_id = :jobId)
+AND (:stage IS NULL OR stage = :stage)
+AND (:state IS NULL OR state = :state)
+AND (:since IS NULL OR updated_at >= :since)
+AND (:until IS NULL OR updated_at < :until)
+AND (:provider IS NULL OR CAST(json_extract(payload, '$.provider') AS TEXT) = :provider)
+AND (:model IS NULL OR CAST(json_extract(payload, '$.model') AS TEXT) = :model)
+ORDER BY updated_at DESC, id DESC LIMIT :pageLimit OFFSET :pageOffset;
+
+upsertOperation:
+INSERT INTO translation_operations VALUES (:id, :jobId, :parentId, :batchId, :imageId, :stage, :state, :updatedAt, :payload)
+ON CONFLICT(id) DO UPDATE SET state = :state, updated_at = :updatedAt, payload = :payload;
+
+eventPage:
+SELECT payload FROM translation_events
+WHERE (:jobId IS NULL OR job_id = :jobId)
+AND (:operationId IS NULL OR operation_id IN (
+    WITH RECURSIVE descendants(id) AS (
+        SELECT :operationId
+        UNION
+        SELECT op.id FROM translation_operations AS op JOIN descendants AS d ON op.parent_id = d.id
+    )
+    SELECT id FROM descendants
+))
+AND (:batchId IS NULL OR batch_id = :batchId)
+AND (:imageId IS NULL OR image_id = :imageId OR batch_id IN :relatedBatchIds OR operation_id IN (
+    WITH RECURSIVE page_operations(id) AS (
+        SELECT id FROM translation_operations WHERE job_id = :jobId AND image_id = :imageId
+        UNION
+        SELECT op.id FROM translation_operations AS op JOIN page_operations AS p ON op.parent_id = p.id
+    )
+    SELECT id FROM page_operations
+))
+AND (:since IS NULL OR time >= :since)
+AND (:until IS NULL OR time < :until)
+AND (:provider IS NULL OR EXISTS (
+    SELECT 1 FROM translation_operations AS attributed WHERE attributed.id = translation_events.operation_id
+    AND CAST(json_extract(attributed.payload, '$.provider') AS TEXT) = :provider
+))
+AND (:model IS NULL OR EXISTS (
+    SELECT 1 FROM translation_operations AS attributed WHERE attributed.id = translation_events.operation_id
+    AND CAST(json_extract(attributed.payload, '$.model') AS TEXT) = :model
+))
+AND (:level IS NULL OR level = :level OR (:level = 'WARN_OR_ERROR' AND level IN ('WARN', 'ERROR')))
+AND (:search = '' OR instr(lower(payload), lower(:search)) > 0)
+ORDER BY time DESC, id DESC LIMIT :pageLimit OFFSET :pageOffset;
+
+upsertUsage:
+INSERT INTO translation_usage VALUES (:id, :jobId, :time, :provider, :model, :payload)
+ON CONFLICT(id) DO UPDATE SET payload = :payload;
+
+usageSince:
+SELECT payload FROM translation_usage WHERE time >= :since ORDER BY time DESC;
+
+upsertBilling:
+INSERT INTO translation_billing VALUES (:id, :connectionId, :periodStart, :periodEnd, :syncedAt, :payload)
+ON CONFLICT(id) DO UPDATE SET synced_at = :syncedAt, payload = :payload;
+
+billing:
+SELECT payload FROM translation_billing ORDER BY period_start DESC;
+
+billingStats:
+SELECT count(*) AS records, coalesce(sum(length(CAST(payload AS BLOB))), 0) AS payload_bytes
+FROM translation_billing WHERE connection_id = :connectionId;
+
+deleteJobEvents:
+DELETE FROM translation_events WHERE job_id = :jobId;
+
+deleteOperations:
+DELETE FROM translation_operations WHERE job_id = :jobId
+AND json_type(payload, '$.geometryCorrection') IS NOT 'object';
+
+deleteGeometryCorrections:
+DELETE FROM translation_operations WHERE job_id = :jobId
+AND json_type(payload, '$.geometryCorrection') IS 'object';
+
+deleteUsage:
+DELETE FROM translation_usage WHERE job_id = :jobId;
+
+deleteBilling:
+DELETE FROM translation_billing WHERE connection_id = :connectionId;
+
+usageById:
+SELECT payload FROM translation_usage WHERE id = :id;
+
+chapterSeriesIds:
+SELECT m._id FROM mangas AS m
+WHERE (m.favorite = 1 OR m.source = 0)
+AND EXISTS(SELECT 1 FROM chapters AS c WHERE c.manga_id = m._id)
+ORDER BY m.title COLLATE NOCASE, m._id;
+
+activeOperations:
+SELECT payload FROM translation_operations WHERE state = 'ACTIVE';
+
+deletionRecords:
+SELECT 'job' AS record_kind, id AS record_id, payload FROM translation_jobs WHERE id = :jobId
+UNION ALL SELECT 'result', image_id, payload FROM translation_results WHERE job_id = :jobId
+UNION ALL SELECT 'review', id, payload FROM translation_reviews WHERE job_id = :jobId
+UNION ALL SELECT 'batch', id, payload FROM translation_batches WHERE job_id = :jobId
+UNION ALL SELECT 'event', id, payload FROM translation_events WHERE job_id = :jobId
+UNION ALL SELECT 'operation', id, payload FROM translation_operations WHERE job_id = :jobId
+UNION ALL SELECT 'usage', id, payload FROM translation_usage WHERE job_id = :jobId
+ORDER BY record_kind, record_id LIMIT :pageLimit OFFSET :pageOffset;
+
+deleteJobBatches:
+DELETE FROM translation_batches WHERE job_id = :jobId;
+
+relatedBatchPayloads:
+SELECT payload FROM translation_batches WHERE job_id = :jobId;
+
+chapterCoverageIdentities:
+SELECT 'original' AS record_kind, image_id,
+    CAST(json_extract(payload, '$.contentHash') AS TEXT) AS content_hash,
+    CAST(json_extract(payload, '$.width') AS INTEGER) AS image_width,
+    CAST(json_extract(payload, '$.height') AS INTEGER) AS image_height,
+    NULL AS known_total
+FROM translation_images WHERE job_id = (
+    SELECT j.id FROM translation_jobs AS j WHERE j.chapter_id = :chapterId
+    AND EXISTS (SELECT 1 FROM translation_images AS i WHERE i.job_id = j.id)
+    ORDER BY CAST(json_extract(j.payload, '$.createdAt') AS INTEGER) DESC, j.id DESC LIMIT 1
+)
+UNION ALL
+SELECT DISTINCT 'saved', r.image_id,
+    CAST(json_extract(r.payload, '$.imageHash') AS TEXT),
+    CAST(json_extract(r.payload, '$.width') AS INTEGER),
+    CAST(json_extract(r.payload, '$.height') AS INTEGER), NULL
+FROM translation_results AS r JOIN translation_jobs AS j ON j.id = r.job_id
+WHERE j.chapter_id = :chapterId
+UNION ALL
+SELECT 'total', '', '', 0, 0, CAST(json_extract(payload, '$.imageCount') AS INTEGER)
+FROM translation_jobs WHERE id = (
+    SELECT id FROM translation_jobs WHERE chapter_id = :chapterId
+    ORDER BY CAST(json_extract(payload, '$.createdAt') AS INTEGER) DESC, id DESC LIMIT 1
+);
+
+replacementJob:
+SELECT payload FROM translation_jobs WHERE id = :jobId;
+
+replacementSuccessor:
+SELECT payload FROM translation_jobs
+WHERE CAST(json_extract(payload, '$.replacesJobId') AS TEXT) = :sourceId
+AND manga_id = :mangaId AND chapter_id = :chapterId
+ORDER BY updated_at DESC, id DESC LIMIT 1;
+
+replacementOriginalCount:
+SELECT count(*) FROM translation_images WHERE job_id = :jobId;
+
+replacementSavedCount:
+SELECT count(*) FROM translation_results WHERE job_id = :jobId;
+
+copyReplacementOriginals:
+INSERT INTO translation_images(job_id, image_id, image_index, payload)
+SELECT :replacementId, image_id, image_index, payload
+FROM translation_images WHERE job_id = :sourceId;
+
+copyReplacementResults:
+INSERT INTO translation_results(job_id, image_id, committed_at, payload)
+SELECT :replacementId, r.image_id, r.committed_at, r.payload
+FROM translation_results AS r
+JOIN translation_images AS i ON i.job_id = r.job_id AND i.image_id = r.image_id
+WHERE r.job_id = :sourceId
+AND json_extract(i.payload, '$.id') = i.image_id
+AND json_extract(r.payload, '$.imageId') = r.image_id
+AND json_extract(i.payload, '$.contentHash') <> ''
+AND json_extract(i.payload, '$.contentHash') = json_extract(r.payload, '$.imageHash')
+AND CAST(json_extract(i.payload, '$.width') AS INTEGER) > 0
+AND CAST(json_extract(i.payload, '$.height') AS INTEGER) > 0
+AND CAST(json_extract(i.payload, '$.width') AS INTEGER) = CAST(json_extract(r.payload, '$.width') AS INTEGER)
+AND CAST(json_extract(i.payload, '$.height') AS INTEGER) = CAST(json_extract(r.payload, '$.height') AS INTEGER);
