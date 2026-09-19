@@ -21,6 +21,7 @@ import androidx.webgpu.GPURenderPassEncoder
 import androidx.webgpu.GPUTexture
 import androidx.webgpu.LoadOp
 import androidx.webgpu.StoreOp
+import androidx.webgpu.TextureFormat
 import ca.mpreg.webgpuviewer.closeTo
 import ca.mpreg.webgpuviewer.draw.Draw
 import ca.mpreg.webgpuviewer.draw.Font
@@ -47,6 +48,7 @@ import kotlinx.coroutines.yield
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -134,6 +136,9 @@ open class ImagePage {
         // only ever one pass open per render() call (see the class doc).
         private lateinit var pass: GPURenderPassEncoder
 
+        /** Format of [pass]'s colour attachment - see [FormatKeyed]. */
+        private var passFormat: Int = TextureFormat.RGBA8Unorm
+
         /** Draws this page's content. Use [rect]/[circle]/[text] to draw into the open pass. */
         open fun render(dst: GPUTexture, x: Float, y: Float, scale: Float) {}
 
@@ -155,7 +160,7 @@ open class ImagePage {
         }
 
         protected fun rect(x1: Float, y1: Float, x2: Float, y2: Float, color: Int) =
-            Draw.rect(pass, x1, y1, x2, y2, color)
+            Draw.rect(pass, passFormat, x1, y1, x2, y2, color)
 
         /**
          * Fills this page's own [width] x [height] footprint with [color] - unlike [rect]'s raw
@@ -183,7 +188,7 @@ open class ImagePage {
         }
 
         protected fun circle(cx: Float, cy: Float, radius: Float, color: Int) =
-            Draw.circle(pass, cx, cy, radius, color)
+            Draw.circle(pass, passFormat, cx, cy, radius, color)
 
         protected fun text(
             dst: GPUTexture,
@@ -277,6 +282,7 @@ open class ImagePage {
                 )
             }
             pass = openedPass
+            passFormat = dst.format
             try {
                 // clear=true already painted the whole dst this colour via clearValue above - a
                 // page-scoped fillPage on top would be redundant. clear=false (the shared-texture
@@ -314,9 +320,9 @@ open class ImagePage {
 
         internal open val hasOverlay: Boolean get() = overlay != null
 
-        internal open fun forEachOverlay(action: (Image, Float, ImageOverlay) -> Unit) {
+        internal open fun forEachOverlay(action: (Image, Float, Float, ImageOverlay) -> Unit) {
             val value = overlay ?: return
-            currentImage?.let { action(it, 0f, value) }
+            currentImage?.let { action(it, 0f, 1f, value) }
         }
 
         private fun drawOverlays(
@@ -325,8 +331,12 @@ open class ImagePage {
         ) {
             if (destroyed || !hasOverlay) return
             overlayPass(encoder, dst) { pass ->
-                forEachOverlay { img, offsetX, value ->
-                    value.draw(pass, dst, img, this.x + x + offsetX / dst.width, this.y + y, this.scale * scale)
+                forEachOverlay { img, offsetX, imageScale, value ->
+                    val placeX = (this.x + x + offsetX / dst.width + WebGpuRenderer.offsetX) /
+                            imageScale - WebGpuRenderer.offsetX
+                    val placeY = (this.y + y + WebGpuRenderer.offsetY) /
+                            imageScale - WebGpuRenderer.offsetY
+                    value.draw(pass, dst, img, placeX, placeY, this.scale * scale * imageScale)
                 }
             }
         }
@@ -373,7 +383,12 @@ open class ImagePage {
         }
 
         private var animationLoop: Job? = null
+
+        // Written by the animation loop on its own dispatcher, read by the render thread.
+        @Volatile
         private var frames: List<Pair<Image, Int>>? = null
+
+        @Volatile
         private var currentFrameImage: Image? = null
 
         /** True while an animation frame loop owns [currentImage]. The tile cache skips animated pages. */
@@ -397,8 +412,10 @@ open class ImagePage {
          * place images with their own math ([ca.mpreg.webgpuviewer.renderer.TileRenderer],
          * [ImageViewerContinuousState]) instead of [renderPage].
          */
-        internal open fun forEachImage(action: (image: Image, offsetX: Float) -> Unit) {
-            currentImage?.let { action(it, 0f) }
+        internal open fun forEachImage(
+            action: (image: Image, offsetX: Float, imageScale: Float) -> Unit
+        ) {
+            currentImage?.let { action(it, 0f, 1f) }
         }
 
         /** True once at least one of this page's images has been uploaded and can be drawn. */
@@ -424,7 +441,11 @@ open class ImagePage {
             super.invalidate()
         }
 
+        @Synchronized
         fun startAnimationLoop(frames: List<Pair<Image, Int>>) {
+            // Nothing cancels the loop twice, so one started after cleanup holds every frame.
+            if (destroyed) return
+
             animationLoop?.cancel()
             this.frames = frames
             currentFrameImage = frames.firstOrNull()?.first
@@ -439,7 +460,7 @@ open class ImagePage {
                         // Keeps running off screen - frames stay in step with their durations,
                         // and invalidate() asks for a redraw only while there is one to ask for.
                         invalidate()
-                        delay(duration.coerceAtLeast(0).milliseconds)
+                        delay(duration.coerceAtLeast(MIN_FRAME_MILLIS).milliseconds)
                     } ?: break
                     frameIndex = (frameIndex + 1) % (this@ImageSingle.frames?.size ?: 1)
                 }
@@ -561,7 +582,16 @@ open class ImagePage {
                 if (!covered) {
                     renderPage(pass, dst, 0f, 0f, 1f)
                 }
-                if (fade < 1f) fadeRect(dst)?.let { drawFade(pass, it[0], it[1], it[2], it[3]) }
+                if (fade < 1f) fadeRect(dst)?.let {
+                    drawFade(
+                        pass,
+                        dst.format,
+                        it[0],
+                        it[1],
+                        it[2],
+                        it[3]
+                    )
+                }
                 return covered
             } finally {
                 pass.endAndClose()
@@ -588,7 +618,17 @@ open class ImagePage {
                 try {
                     renderPage(pass, tex, 0f, 0f, 1f, masked = false)
                     if (fade < 1f) {
-                        fadeRect(tex)?.let { drawFade(pass, it[0], it[1], it[2], it[3], false) }
+                        fadeRect(tex)?.let {
+                            drawFade(
+                                pass,
+                                tex.format,
+                                it[0],
+                                it[1],
+                                it[2],
+                                it[3],
+                                false
+                            )
+                        }
                     }
                 } finally {
                     pass.endAndClose()
@@ -608,7 +648,17 @@ open class ImagePage {
                 // A fade re-seeds the cache every frame (frameVersion), which is what lets a
                 // page fade in mid-turn at all.
                 if (fade < 1f) {
-                    fadeRect(tex)?.let { drawFade(pass, it[0], it[1], it[2], it[3], false) }
+                    fadeRect(tex)?.let {
+                        drawFade(
+                            pass,
+                            tex.format,
+                            it[0],
+                            it[1],
+                            it[2],
+                            it[3],
+                            false
+                        )
+                    }
                 }
             } finally {
                 pass.endAndClose()
@@ -658,11 +708,8 @@ open class ImagePage {
 
         override fun drawBackgroundColumns(
             pass: GPURenderPassEncoder, dst: GPUTexture, offsetX: Float, offsetY: Float
-        ) {
-            val image = currentImage ?: return
-            if (image.mipmaps.isEmpty()) return
-            // One image, so its column is the whole width - see [backgroundSpansFullWidth].
-            Draw.rect(pass, offsetX, offsetY, offsetX + 1f, offsetY + 1f, image.backgroundColor)
+        ) = forEachBackgroundColumn(dst) { color, x1, x2 ->
+            Draw.rect(pass, dst.format, offsetX + x1, offsetY, offsetX + x2, offsetY + 1f, color)
         }
 
         /**
@@ -682,10 +729,10 @@ open class ImagePage {
             masked: Boolean = true
         ) {
             val variant = RenderPage.variantFor(linear, masked)
-            forEachPlacedImage(dst, x, y, scale) { image, rect, placeX, placeY, placeScale ->
-                if (!linear || !masked) {
-                    drawImageBackground(pass, image, rect, scale, maskedBackground = masked)
-                }
+            if (!linear || !masked) {
+                drawPageBackground(pass, dst, scale, maskedBackground = masked)
+            }
+            forEachPlacedImage(dst, x, y, scale) { image, _, placeX, placeY, placeScale ->
                 for (tile in image.prepareTilesForRender(dst, placeX, placeY, placeScale)) {
                     RenderPage.drawTile(pass, dst, tile, variant)
                 }
@@ -703,23 +750,14 @@ open class ImagePage {
          */
         fun renderBackground(
             pass: GPURenderPassEncoder, dst: GPUTexture, x: Float, y: Float, scale: Float
-        ) = forEachPlacedImage(dst, x, y, scale) { image, rect, _, _, _ ->
-            drawImageBackground(pass, image, rect, scale, maskedBackground = true)
-        }
+        ) = drawPageBackground(pass, dst, scale, maskedBackground = true)
 
         /**
-         * Draws [image]'s fading background rect, for [renderPage]'s `drawBackground` branch.
-         * Alpha fades with distance from home/min scale or the page's pan bounds, so it only shows
-         * near the edges of the zoom/pan range where the image itself doesn't fill the viewport.
+         * The background's fade, from the live pan/scale - it only shows near the edges of the
+         * zoom/pan range. Page level, so a spread fades as one sheet.
          */
-        private fun drawImageBackground(
-            pass: GPURenderPassEncoder,
-            image: Image,
-            rect: FloatArray,
-            scale: Float,
-            maskedBackground: Boolean,
-        ) {
-            val parent = parent
+        private fun backgroundAlpha(scale: Float): Float {
+            val parent = parent ?: return 1f
             val minScale = minScale
             val homeScale = homeScale
             val currentScale = this.scale * scale
@@ -743,7 +781,7 @@ open class ImagePage {
             }
 
             fun boundsProximityAt(anchorScale: Float): Float {
-                if (parent == null || anchorScale <= 0f) return 0f
+                if (anchorScale <= 0f) return 0f
                 val minX = minX(anchorScale)
                 val maxX = maxX(anchorScale)
                 val minY = minY(anchorScale)
@@ -756,42 +794,50 @@ open class ImagePage {
                 )
             }
 
-            val bgAlpha = if (parent != null) {
-                if (currentScale > minScale) {
-                    boundsProximityAt(currentScale)
-                } else {
-                    val homeProximity = min(proximity(homeScale), boundsProximityAt(homeScale))
-                    val minProximity = min(proximity(minScale), boundsProximityAt(minScale))
-                    max(homeProximity, minProximity)
-                }
-            } else {
-                1f
-            }
+            if (currentScale > minScale) return boundsProximityAt(currentScale)
+            val homeProximity = min(proximity(homeScale), boundsProximityAt(homeScale))
+            val minProximity = min(proximity(minScale), boundsProximityAt(minScale))
+            return max(homeProximity, minProximity)
+        }
 
-            val a = (((image.backgroundColor ushr 24) and 0xFF) * bgAlpha).toInt()
+        /** [color] at [backgroundAlpha]. The rect blends with SrcAlpha, so only alpha fades. */
+        private fun drawBackgroundRect(
+            pass: GPURenderPassEncoder,
+            format: Int,
+            color: Int,
+            x1: Float,
+            x2: Float,
+            scale: Float,
+            maskedBackground: Boolean,
+        ) {
+            // A column the seam clamp collapsed.
+            if (x2 <= x1) return
+
+            val a = (((color ushr 24) and 0xFF) * backgroundAlpha(scale)).toInt()
             if (a <= 0) return
 
-            val x1 = if (backgroundSpansFullWidth) 0f else rect[0]
-            val x2 = if (backgroundSpansFullWidth) 1f else rect[2]
             // Alpha only. The frame clears transparent, so fading this out crossfades to whatever
             // the app painted behind the surface - the backdrop this is meant to give way to.
             // Both pipelines blend with SrcAlpha already, so scaling rgb here applied the fade a
             // second time and took the crossfade through black on its way there.
-            val bgColor = (a shl 24) or (image.backgroundColor and 0xFFFFFF)
+            val bgColor = (a shl 24) or (color and 0xFFFFFF)
             if (maskedBackground) {
-                RenderPage.drawMaskedRect(pass, x1, 0f, x2, 1f, bgColor)
+                RenderPage.drawMaskedRect(pass, format, x1, 0f, x2, 1f, bgColor)
             } else {
-                Draw.rect(pass, x1, 0f, x2, 1f, bgColor)
+                Draw.rect(pass, format, x1, 0f, x2, 1f, bgColor)
             }
         }
 
-        /**
-         * True when the background colour paints the whole viewport rather than just the image's
-         * rect - always so with one image, which has no neighbouring column to bleed into.
-         * [ImageSpread] narrows it when it has two.
-         */
-        internal open val backgroundSpansFullWidth: Boolean
-            get() = true
+        /** Each [forEachBackgroundColumn] column once - they tile, so nothing blends twice. */
+        private fun drawPageBackground(
+            pass: GPURenderPassEncoder, dst: GPUTexture, scale: Float, maskedBackground: Boolean
+        ) {
+            // Outside forEachPlacedImage's walk, so it needs that guard of its own.
+            if (destroyed) return
+            forEachBackgroundColumn(dst) { color, x1, x2 ->
+                drawBackgroundRect(pass, dst.format, color, x1, x2, scale, maskedBackground)
+            }
+        }
 
         /** Walks this page's image(s) via [forEachImage], placing each for [action] to draw against. */
         private fun forEachPlacedImage(
@@ -805,11 +851,13 @@ open class ImagePage {
             // been evicted since - its images' buffers are gone, and touching one throws.
             if (destroyed) return
 
-            forEachImage { img, srcOffsetX ->
+            forEachImage { img, srcOffsetX, imgScale ->
                 if (img.mipmaps.isNotEmpty()) {
-                    val placeX = this.x + x + srcOffsetX / dst.width
-                    val placeY = this.y + y
-                    val placeScale = this.scale * scale
+                    val placeX = (this.x + x + srcOffsetX / dst.width + WebGpuRenderer.offsetX) /
+                            imgScale - WebGpuRenderer.offsetX
+                    val placeY =
+                        (this.y + y + WebGpuRenderer.offsetY) / imgScale - WebGpuRenderer.offsetY
+                    val placeScale = this.scale * scale * imgScale
                     val rect = img.placement(dst, placeX, placeY, placeScale)
                     action(img, rect, placeX, placeY, placeScale)
                 }
@@ -829,8 +877,10 @@ open class ImagePage {
             animationLoop?.cancel()
             animationLoop = null
 
-            // Only clean the image if we own it
+            // The HDR claim was taken when the image was built, so it goes back either way.
             if (!ownsImage) {
+                frames?.forEach { it.first.releaseHdr() }
+                image?.releaseHdr()
                 frames = null
                 currentFrameImage = null
                 return
@@ -840,8 +890,15 @@ open class ImagePage {
             frames = null
             currentFrameImage = null
 
-            // Frames include the image; otherwise clean it directly
-            val imagesToClean = framesToClean?.map { it.first } ?: listOfNotNull(image)
+            // [startAnimationLoop] takes any list, so [image] may not be among the frames.
+            val imagesToClean = when (framesToClean) {
+                null -> listOfNotNull(image)
+                else -> (framesToClean.map { it.first } + listOfNotNull(image)).distinct()
+            }
+
+            // Before the launch, not inside it: work needing the render dispatcher is what kept
+            // HDR on after the last HDR page was evicted.
+            imagesToClean.forEach { it.releaseHdr() }
 
             if (imagesToClean.isNotEmpty()) {
                 cleanupScope.launch {
@@ -887,10 +944,25 @@ open class ImagePage {
         private val rightSingle: ImageSingle?
             get() = right as? ImageSingle
 
+        // Grows the shorter side to the taller one's height
+        private fun sideScale(side: ImagePage?): Float {
+            val h = side?.height ?: return 1f
+            val tallest = max(left?.height ?: 0, right?.height ?: 0)
+            return if (h <= 0 || tallest <= h) 1f else tallest.toFloat() / h
+        }
+
+        private val leftScale: Float
+            get() = sideScale(left)
+        private val rightScale: Float
+            get() = sideScale(right)
+
+        private fun sideWidth(side: ImagePage?): Float =
+            (side?.width ?: 0) * sideScale(side)
+
         /** Runs [action] for each present side, with its pixel offset from the seam. */
-        private inline fun forEachSide(action: (side: ImagePage, offsetX: Float) -> Unit) {
-            left?.let { action(it, -0.5f * it.width) }
-            right?.let { action(it, 0.5f * it.width) }
+        private inline fun forEachSide(action: (side: ImagePage, offsetX: Float, scale: Float) -> Unit) {
+            left?.let { action(it, -0.5f * it.width * leftScale, leftScale) }
+            right?.let { action(it, 0.5f * it.width * rightScale, rightScale) }
         }
 
         override var highQuality: Boolean
@@ -914,17 +986,23 @@ open class ImagePage {
          * Each side sits half its own width out from the seam (the page anchor). A [Render] side
          * has no image to place and paints itself instead - see [drawRenderSides].
          */
-        override fun forEachImage(action: (image: Image, offsetX: Float) -> Unit) {
-            leftSingle?.currentImage?.let { action(it, -0.5f * it.width) }
-            rightSingle?.currentImage?.let { action(it, 0.5f * it.width) }
+        override fun forEachImage(
+            action: (image: Image, offsetX: Float, imageScale: Float) -> Unit
+        ) {
+            leftSingle?.currentImage?.let { action(it, -0.5f * it.width * leftScale, leftScale) }
+            rightSingle?.currentImage?.let { action(it, 0.5f * it.width * rightScale, rightScale) }
         }
 
         override val hasOverlay: Boolean
             get() = leftSingle?.hasOverlay == true || rightSingle?.hasOverlay == true
 
-        override fun forEachOverlay(action: (Image, Float, ImageOverlay) -> Unit) {
-            leftSingle?.forEachOverlay { image, offset, overlay -> action(image, offset - 0.5f * image.width, overlay) }
-            rightSingle?.forEachOverlay { image, offset, overlay -> action(image, offset + 0.5f * image.width, overlay) }
+        override fun forEachOverlay(action: (Image, Float, Float, ImageOverlay) -> Unit) {
+            leftSingle?.forEachOverlay { image, offset, imageScale, overlay ->
+                action(image, (offset - 0.5f * image.width) * leftScale, imageScale * leftScale, overlay)
+            }
+            rightSingle?.forEachOverlay { image, offset, imageScale, overlay ->
+                action(image, (offset + 0.5f * image.width) * rightScale, imageScale * rightScale, overlay)
+            }
         }
 
         override val hasUploadedImage: Boolean
@@ -932,10 +1010,6 @@ open class ImagePage {
 
         override val isDecoded: Boolean
             get() = left?.isDecoded == true || right?.isDecoded == true
-
-        /** Two columns meeting at the seam, so neither may paint over the other half. */
-        override val backgroundSpansFullWidth: Boolean
-            get() = left == null || right == null
 
         /** As [ImageSingle.drawLive], then each [Render] side on top - see [drawRenderSides]. */
         override fun drawLive(
@@ -1000,9 +1074,16 @@ open class ImagePage {
         private fun drawRenderSides(encoder: GPUCommandEncoder, dst: GPUTexture) {
             // As forEachPlacedImage: the page can have been evicted since the snapshot was taken.
             if (destroyed) return
-            forEachSide { side, offsetX ->
+            forEachSide { side, offsetX, sideScale ->
                 if (side is Render) {
-                    side.renderLoaded(encoder, x + offsetX / dst.width, y, scale, dst)
+                    // As forEachPlacedImage: render scales x/y by the scale it is given.
+                    side.renderLoaded(
+                        encoder,
+                        (x + offsetX / dst.width) / sideScale,
+                        y / sideScale,
+                        scale * sideScale,
+                        dst
+                    )
                 }
             }
         }
@@ -1014,16 +1095,24 @@ open class ImagePage {
         /** That side's own rect, so a spread turns one real page rather than half of a sheet. */
         override fun leafRect(dst: GPUTexture, left: Boolean): FloatArray? {
             val side = (if (left) this.left else this.right) ?: return null
-            val placeX = x + (if (left) -0.5f else 0.5f) * side.width / dst.width
+            val sideScale = sideScale(side)
+            val placeX = x + (if (left) -0.5f else 0.5f) * sideWidth(side) / dst.width
             (side as? ImageSingle)?.currentImage?.let { image ->
-                if (image.mipmaps.isNotEmpty()) return image.placement(dst, placeX, y, scale)
+                if (image.mipmaps.isNotEmpty()) {
+                    return image.placement(
+                        dst,
+                        (placeX + WebGpuRenderer.offsetX) / sideScale - WebGpuRenderer.offsetX,
+                        (y + WebGpuRenderer.offsetY) / sideScale - WebGpuRenderer.offsetY,
+                        scale * sideScale
+                    )
+                }
             }
-            // A Render side has no image to place - [sideColumn]'s fallback, plus the y axis.
+            // A Render side has no image to place, so measure its own declared size instead.
             if (side !is Render) return null
             val cx = 0.5f + scale * (placeX + WebGpuRenderer.offsetX)
             val cy = 0.5f + scale * (y + WebGpuRenderer.offsetY)
-            val hw = scale * 0.5f * side.width / dst.width
-            val hh = scale * 0.5f * side.height / dst.height
+            val hw = scale * 0.5f * sideWidth(side) / dst.width
+            val hh = scale * 0.5f * side.height * sideScale / dst.height
             return floatArrayOf(cx - hw, cy - hh, cx + hw, cy + hh)
         }
 
@@ -1047,41 +1136,31 @@ open class ImagePage {
         override val backgroundColor: Int?
             get() = left?.backgroundColor ?: right?.backgroundColor
 
-        override fun drawBackgroundColumns(
-            pass: GPURenderPassEncoder, dst: GPUTexture, offsetX: Float, offsetY: Float
-        ) = forEachSide { side, srcOffsetX ->
-            val color = side.backgroundColor
-            if (color != null) {
-                val (x1, x2) = sideColumn(side, srcOffsetX, dst)
-                Draw.rect(pass, offsetX + x1, offsetY, offsetX + x2, offsetY + 1f, color)
-            }
-        }
+        /** Each side's own colour over its own half: seam to screen edge, not just its image. */
+        override fun forEachBackgroundColumn(
+            dst: GPUTexture, action: (color: Int, x1: Float, x2: Float) -> Unit
+        ) {
+            val leftColor = left?.backgroundColor
+            val rightColor = right?.backgroundColor
+            // Clamped: panned far enough, the seam leaves the screen and one half takes it all.
+            val seam = spineX(dst)?.fastCoerceIn(0f, 1f)
 
-        /**
-         * [side]'s left/right edges within [dst], normalised - the whole width when it is the
-         * only side. An image side goes through [Image.placement] so its own [Image.x] counts; a
-         * [Render] side has no such offset and gets the same formula without it.
-         */
-        private fun sideColumn(
-            side: ImagePage, srcOffsetX: Float, dst: GPUTexture
-        ): Pair<Float, Float> {
-            if (backgroundSpansFullWidth) return 0f to 1f
-            val placeX = x + srcOffsetX / dst.width
-            (side as? ImageSingle)?.currentImage?.let { image ->
-                val rect = image.placement(dst, placeX, y, scale)
-                return rect[0] to rect[2]
+            if (seam == null || leftColor == null || rightColor == null) {
+                // One side, or nothing placed yet to find a seam by.
+                action(leftColor ?: rightColor ?: return, 0f, 1f)
+                return
             }
-            val center = 0.5f + scale * (placeX + WebGpuRenderer.offsetX)
-            val half = scale * 0.5f * side.width / dst.width
-            return center - half to center + half
+
+            action(leftColor, 0f, seam)
+            action(rightColor, seam, 1f)
         }
 
         override fun horizontalExtent(): Pair<Float, Float> =
-            (left?.width ?: 0).toFloat() to (right?.width ?: 0).toFloat()
+            sideWidth(left) to sideWidth(right)
 
         /** Total width (sum of both sides' widths) */
         override val width: Int
-            get() = (left?.width ?: 0) + (right?.width ?: 0)
+            get() = (sideWidth(left) + sideWidth(right)).roundToInt()
 
         /** Total height (max of both sides' heights) */
         override val height: Int
@@ -1097,12 +1176,14 @@ open class ImagePage {
                     leftSingle?.image?.let { it.width - (it.trim?.left ?: 0) } ?: left?.width ?: 0
                 val rightW =
                     rightSingle?.image?.let { it.trim?.right ?: it.width } ?: right?.width ?: 0
-                return leftW + rightW
+                return (leftW * leftScale + rightW * rightScale).roundToInt()
             }
 
         /** Visible height after trim (max of trim heights) */
         override val trimHeight: Int
-            get() = max(left?.trimHeight ?: 0, right?.trimHeight ?: 0)
+            get() = max(
+                (left?.trimHeight ?: 0) * leftScale, (right?.trimHeight ?: 0) * rightScale
+            ).roundToInt()
 
         override val isHalfWidth: Boolean
             get() = true
@@ -1129,9 +1210,9 @@ open class ImagePage {
             if (!trimmed) return null
             val images = listOfNotNull(leftSingle?.image, rightSingle?.image)
             if (images.all { it.trim == null }) return null
-            val trimTop = images.mapNotNull { it.trim?.top ?: 0 }.minOrNull() ?: 0
-            val trimBottom =
-                images.mapNotNull { it.trim?.bottom ?: it.height }.maxOrNull() ?: height
+            // An untrimmed side contributes its whole extent, so nothing of it is panned past.
+            val trimTop = images.minOf { it.trim?.top ?: 0 }
+            val trimBottom = images.maxOf { it.trim?.bottom ?: it.height }
             return trimTop to trimBottom
         }
 
@@ -1155,6 +1236,9 @@ open class ImagePage {
 
         /** Default [fadeIn] length. */
         const val FADE_MILLIS = 200
+
+        /** Frame-duration floor: plenty of GIFs declare 0, which spins the loop on delay(0). */
+        private const val MIN_FRAME_MILLIS = 10
     }
 
     /** True once page content has been decoded/is otherwise ready to draw. */
@@ -1294,10 +1378,18 @@ open class ImagePage {
     open val backgroundColor: Int? = null
 
     /**
-     * Draws this page's per-image background colour as separate columns at [offsetX]/[offsetY]
-     * within its own cached-surface slide - see
-     * [ca.mpreg.webgpuviewer.transition.TransitionBasic] and the
-     * [ca.mpreg.webgpuviewer.transition.TransitionStackUp] family. A no-op for a non-[Images] page.
+     * Background columns tiling the whole width, normalised to [dst]. One for a single page; a
+     * spread gives each side its own, so neither crosses the seam nor leaves the edges bare.
+     */
+    internal open fun forEachBackgroundColumn(
+        dst: GPUTexture, action: (color: Int, x1: Float, x2: Float) -> Unit
+    ) {
+        action(backgroundColor ?: return, 0f, 1f)
+    }
+
+    /**
+     * [forEachBackgroundColumn] at [offsetX]/[offsetY], for a cached-surface slide - see
+     * [ca.mpreg.webgpuviewer.transition.TransitionBasic]. A no-op for a non-[Images] page.
      */
     open fun drawBackgroundColumns(
         pass: GPURenderPassEncoder, dst: GPUTexture, offsetX: Float, offsetY: Float
@@ -1435,6 +1527,7 @@ open class ImagePage {
     /** Veil this page's rect, in fractions of the target, with what is left of the fade. */
     internal fun drawFade(
         pass: GPURenderPassEncoder,
+        format: Int,
         x1: Float,
         y1: Float,
         x2: Float,
@@ -1446,8 +1539,8 @@ open class ImagePage {
         val alpha = (((color ushr 24) and 0xFF) * (1f - fade)).toInt().coerceIn(0, 255)
         val veil = (alpha shl 24) or (color and 0xFFFFFF)
         // Only a live draw's pass has the stencil attachment drawMaskedRect's pipeline declares.
-        if (masked) RenderPage.drawMaskedRect(pass, x1, y1, x2, y2, veil)
-        else Draw.rect(pass, x1, y1, x2, y2, veil)
+        if (masked) RenderPage.drawMaskedRect(pass, format, x1, y1, x2, y2, veil)
+        else Draw.rect(pass, format, x1, y1, x2, y2, veil)
     }
 
     /** True while the viewer is drawing this page, itself or as a side of a spread. */
@@ -1491,8 +1584,10 @@ open class ImagePage {
      * [Images] overrides this to fit each one independently rather than [width]/[height]'s
      * combined span - the default here is only ever exercised by a non-spread page.
      */
-    protected open fun halfWidthScale(halfWidth: Float, parentHeight: Float): Float =
-        minOf(halfWidth / width, parentHeight / height).coerceAtLeast(0.01f)
+    protected open fun halfWidthScale(halfWidth: Float, parentHeight: Float): Float {
+        if (width <= 0 || height <= 0) return 0.01f
+        return minOf(halfWidth / width, parentHeight / height).coerceAtLeast(0.01f)
+    }
 
     val atHome: Boolean
         get() = x.closeTo(homeX) && y.closeTo(homeY) && atHomeScale
@@ -1541,8 +1636,10 @@ open class ImagePage {
                 return halfWidthScale(parentWidth / 2f, parentHeight)
             }
 
-            // Single SINGLE page
-            return minOf(parentWidth / width, parentHeight / height).coerceAtLeast(0.01f)
+            // Guarded as [homeScale] is: a page still sizing divides to Infinity, then NaN in x/y.
+            val w = width.toFloat().takeIf { it > 0f } ?: return 0.01f
+            val h = height.toFloat().takeIf { it > 0f } ?: return 0.01f
+            return minOf(parentWidth / w, parentHeight / h).coerceAtLeast(0.01f)
         }
 
     var maxScale = 0f

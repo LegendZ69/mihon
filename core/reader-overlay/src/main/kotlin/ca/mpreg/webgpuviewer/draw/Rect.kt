@@ -15,7 +15,6 @@ import androidx.webgpu.GPUPrimitiveState
 import androidx.webgpu.GPURenderPassColorAttachment
 import androidx.webgpu.GPURenderPassDescriptor
 import androidx.webgpu.GPURenderPassEncoder
-import androidx.webgpu.GPURenderPipeline
 import androidx.webgpu.GPURenderPipelineDescriptor
 import androidx.webgpu.GPUShaderModuleDescriptor
 import androidx.webgpu.GPUShaderSourceWGSL
@@ -24,14 +23,16 @@ import androidx.webgpu.GPUVertexState
 import androidx.webgpu.LoadOp
 import androidx.webgpu.PrimitiveTopology
 import androidx.webgpu.StoreOp
-import androidx.webgpu.TextureFormat
+import ca.mpreg.webgpuviewer.renderer.FormatKeyed
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
+import ca.mpreg.webgpuviewer.renderer.endAndRelease
+import ca.mpreg.webgpuviewer.renderer.setTransientBindGroup
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 private val device get() = WebGpuRenderer.device
 
-private val pipeline: GPURenderPipeline by lazy {
+private val pipelines = FormatKeyed { format ->
     val shaderModule = device.createShaderModule(
         GPUShaderModuleDescriptor(
             shaderSourceWGSL = GPUShaderSourceWGSL(RECT_SHADER)
@@ -43,7 +44,7 @@ private val pipeline: GPURenderPipeline by lazy {
             fragment = GPUFragmentState(
                 module = shaderModule, entryPoint = "fs_main", targets = arrayOf(
                     GPUColorTargetState(
-                        format = TextureFormat.RGBA8Unorm, blend = GPUBlendState(
+                        format = format, blend = GPUBlendState(
                             color = GPUBlendComponent(
                                 srcFactor = BlendFactor.SrcAlpha,
                                 dstFactor = BlendFactor.OneMinusSrcAlpha,
@@ -125,11 +126,12 @@ fun Draw.rect(
     y2: Float,
     color: Int
 ) {
+    val targetView = texture.createView()
     val pass = encoder.beginRenderPass(
         GPURenderPassDescriptor(
             colorAttachments = arrayOf(
                 GPURenderPassColorAttachment(
-                    view = texture.createView(),
+                    view = targetView,
                     loadOp = LoadOp.Load,
                     storeOp = StoreOp.Store,
                     clearValue = androidx.webgpu.GPUColor(0.0, 0.0, 0.0, 0.0)
@@ -137,8 +139,8 @@ fun Draw.rect(
             )
         )
     )
-    rect(pass, x1, y1, x2, y2, color)
-    pass.end()
+    rect(pass, texture.format, x1, y1, x2, y2, color)
+    pass.endAndRelease(targetView)
 }
 
 /**
@@ -151,6 +153,8 @@ fun Draw.rect(
  */
 fun Draw.rect(
     pass: GPURenderPassEncoder,
+    /** Format of [pass]'s colour attachment - see [FormatKeyed]. */
+    format: Int,
     x1: Float,
     y1: Float,
     x2: Float,
@@ -179,8 +183,9 @@ fun Draw.rect(
     )
     device.queue.writeBuffer(uniformBuffer, 0, byteBuffer)
 
+    val pipeline = pipelines[format]
     pass.setPipeline(pipeline)
-    pass.setBindGroup(
+    pass.setTransientBindGroup(
         0, device.createBindGroup(
             GPUBindGroupDescriptor(
                 layout = pipeline.getBindGroupLayout(0), entries = arrayOf(
@@ -190,4 +195,5 @@ fun Draw.rect(
         )
     )
     pass.draw(6)
+    uniformBuffer.close()
 }

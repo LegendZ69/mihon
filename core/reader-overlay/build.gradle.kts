@@ -92,7 +92,7 @@ kotlin.compilerOptions.freeCompilerArgs.addAll(
 )
 
 dependencies {
-    upstreamViewer("ca.mpreg:webgpuviewer:40@aar")
+    upstreamViewer("ca.mpreg:webgpuviewer:47@aar")
     upstreamViewer("com.github.mihonapp:subsampling-scale-image-view:94915e6f73@aar")
     implementation(libs.image.decoder)
     api(files(generatedUpstream.map { it.file("webgpu-api.jar") }).builtBy(prepareUpstreamViewer))

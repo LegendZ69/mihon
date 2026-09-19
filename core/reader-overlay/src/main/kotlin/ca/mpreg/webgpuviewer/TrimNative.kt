@@ -13,8 +13,17 @@ import java.nio.ByteBuffer
  * packed RGBA8.
  */
 object TrimNative {
+    /** False on a packaging/ABI mismatch - loading a class that touches this shouldn't itself crash. */
+    val isAvailable: Boolean
+
     init {
-        System.loadLibrary("resize")
+        isAvailable = try {
+            System.loadLibrary("resize")
+            true
+        } catch (e: Throwable) {
+            android.util.Log.e("TrimNative", "Failed to load native resize library", e)
+            false
+        }
     }
 
     /**

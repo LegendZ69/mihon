@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.media.ExifInterface
+import android.util.Half
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.webgpu.BufferUsage
@@ -44,6 +45,8 @@ import tachiyomi.domain.translation.model.TranslationPoint
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.roundToInt
 
 @RunWith(AndroidJUnit4::class)
 class TranslationOverlayRenderingTest {
@@ -412,6 +415,49 @@ class TranslationOverlayRenderingTest {
         }
 
     @Test
+    fun unequalHeightSpreadScalesOverlayWithItsOriginalPage() = runBlocking {
+        val left = ImagePage.ImageSingle(solidImage(128, Color.RED))
+        val right = ImagePage.ImageSingle(solidImage(256, Color.BLUE))
+        val spread = ImagePage.ImageSpread(left, right)
+        try {
+            left.replaceOverlay(
+                ImageOverlay(
+                    1,
+                    128,
+                    128,
+                    listOf(ImageOverlay.Layer(solidImage(16, Color.WHITE), 32f, 40f, 16f, 16f)),
+                ),
+            )
+            spread.scale = 0.5f
+            val pixels = render(spread)
+            assertPixel(Color.WHITE, pixels, 34, 106)
+            assertPixel(Color.RED, pixels, 20, 106)
+            assertPixel(Color.BLUE, pixels, 162, 106)
+            left.replaceOverlay(null)
+            assertPixel(Color.RED, render(spread), 34, 106)
+        } finally {
+            spread.cleanup()
+            left.cleanup()
+            right.cleanup()
+        }
+    }
+
+    @Test
+    fun hdrRenderTargetPreservesOverlayAlphaAndRemoval() = runBlocking {
+        val page = ImagePage.ImageSingle(solidImage(256, Color.RED))
+        try {
+            page.replaceOverlay(overlay(40f, 60f, Color.argb(128, 255, 255, 255)))
+            val pixels = render(page, format = TextureFormat.RGBA16Float)
+            assertPixel(Color.rgb(255, 128, 128), pixels, 42, 62)
+            assertPixel(Color.RED, pixels, 20, 62)
+            page.replaceOverlay(null)
+            assertPixel(Color.RED, render(page, format = TextureFormat.RGBA16Float), 42, 62)
+        } finally {
+            page.cleanup()
+        }
+    }
+
+    @Test
     fun repeatedTranslucentRevisionsDoNotAccumulateOrLeaveOldRegions() =
         runBlocking {
             val page = ImagePage.ImageSingle(solidImage(256, Color.RED))
@@ -550,6 +596,7 @@ class TranslationOverlayRenderingTest {
     private suspend fun render(
         page: ImagePage.ImageSingle,
         frames: Int = 1,
+        format: Int = TextureFormat.RGBA8Unorm,
         beforeFrame: suspend (Int) -> Unit = {},
     ): ByteArray =
         WebGpuRenderer.withContext { device ->
@@ -559,10 +606,11 @@ class TranslationOverlayRenderingTest {
                     GPUTextureDescriptor(
                         usage = TextureUsage.RenderAttachment or TextureUsage.CopySrc or TextureUsage.TextureBinding,
                         size = extent,
-                        format = TextureFormat.RGBA8Unorm,
+                        format = format,
                     ),
                 )
-            val size = 256L * 256 * 4
+            val bytesPerPixel = if (format == TextureFormat.RGBA16Float) 8 else 4
+            val size = 256L * 256 * bytesPerPixel
             val buffer =
                 device.createBuffer(
                     GPUBufferDescriptor(
@@ -574,17 +622,22 @@ class TranslationOverlayRenderingTest {
             try {
                 repeat(frames) { frame ->
                     beforeFrame(frame)
-                    val draw = device.createCommandEncoder()
-                    page.renderWith(draw, 0f, 0f, 1f, texture)
-                    device.queue.submit(arrayOf(draw.finish()))
+                    device.createCommandEncoder().use { draw ->
+                        page.renderWith(draw, 0f, 0f, 1f, texture)
+                        draw.finish().use { commands -> device.queue.use { it.submit(arrayOf(commands)) } }
+                    }
                 }
-                val encoder = device.createCommandEncoder()
-                encoder.copyTextureToBuffer(
-                    GPUTexelCopyTextureInfo(texture),
-                    GPUTexelCopyBufferInfo(buffer, GPUTexelCopyBufferLayout(bytesPerRow = 1024, rowsPerImage = 256)),
-                    extent,
-                )
-                device.queue.submit(arrayOf(encoder.finish()))
+                device.createCommandEncoder().use { encoder ->
+                    encoder.copyTextureToBuffer(
+                        GPUTexelCopyTextureInfo(texture),
+                        GPUTexelCopyBufferInfo(
+                            buffer,
+                            GPUTexelCopyBufferLayout(bytesPerRow = 256 * bytesPerPixel, rowsPerImage = 256),
+                        ),
+                        extent,
+                    )
+                    encoder.finish().use { commands -> device.queue.use { it.submit(arrayOf(commands)) } }
+                }
                 withTimeout(15_000) {
                     coroutineScope {
                         val pump =
@@ -602,11 +655,20 @@ class TranslationOverlayRenderingTest {
                     }
                 }
                 val mapped = requireNotNull(buffer.getConstMappedRange(0, size))
-                ByteArray(size.toInt()).also { mapped.get(it) }
+                if (format == TextureFormat.RGBA16Float) {
+                    mapped.order(ByteOrder.LITTLE_ENDIAN)
+                    ByteArray(256 * 256 * 4) {
+                        (Half.toFloat(mapped.short).coerceIn(0f, 1f) * 255f).roundToInt().toByte()
+                    }
+                } else {
+                    ByteArray(size.toInt()).also { mapped.get(it) }
+                }
             } finally {
                 buffer.unmap()
                 buffer.destroy()
+                buffer.close()
                 texture.destroy()
+                texture.close()
             }
         }
 

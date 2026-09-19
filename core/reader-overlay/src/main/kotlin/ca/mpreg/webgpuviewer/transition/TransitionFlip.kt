@@ -36,15 +36,16 @@ import androidx.webgpu.LoadOp
 import androidx.webgpu.PrimitiveTopology.Companion.TriangleList
 import androidx.webgpu.ShaderStage
 import androidx.webgpu.StoreOp
-import androidx.webgpu.TextureFormat
 import ca.mpreg.webgpuviewer.draw.Draw
 import ca.mpreg.webgpuviewer.draw.rect
+import ca.mpreg.webgpuviewer.renderer.FormatKeyed
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
+import ca.mpreg.webgpuviewer.renderer.endAndRelease
+import ca.mpreg.webgpuviewer.renderer.setTransientBindGroup
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.blendBackgroundColor
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.blitCachedRegion
 import ca.mpreg.webgpuviewer.transition.TransitionFlip.LIT_ENDS
 import ca.mpreg.webgpuviewer.transition.TransitionFlip.blankAlpha
-import ca.mpreg.webgpuviewer.transition.TransitionFlip.punchPipeline
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -79,6 +80,9 @@ object TransitionFlip : Transition() {
 
     /** How much of each end eases back to flat lighting, to match the static halves. */
     private const val LIT_ENDS = 0.15f
+
+    /** How much of each end the static halves fade over - opaque through the rest of the turn. */
+    private const val FADE_ENDS = 0.25f
 
     // Along the leaf only - it does not bend vertically, so rows buy just a shorter diagonal.
     private const val COLS = 64
@@ -173,7 +177,7 @@ object TransitionFlip : Transition() {
      * holds the uniform alone and rejects the leaf's own bind group - which fails the pass, and
      * with it every draw in the frame.
      */
-    private val punchPipeline: GPURenderPipeline by lazy {
+    private val punchPipelines = FormatKeyed { format ->
         val shaderModule = device.createShaderModule(
             GPUShaderModuleDescriptor(shaderSourceWGSL = GPUShaderSourceWGSL(code))
         )
@@ -191,8 +195,7 @@ object TransitionFlip : Transition() {
                 fragment = GPUFragmentState(
                     shaderModule, entryPoint = "fs_punch", targets = arrayOf(
                         GPUColorTargetState(
-                            format = TextureFormat.RGBA8Unorm,
-                            blend = GPUBlendState(color = zero, alpha = zero)
+                            format = format, blend = GPUBlendState(color = zero, alpha = zero)
                         )
                     )
                 ),
@@ -227,19 +230,27 @@ object TransitionFlip : Transition() {
             t,
         )
 
+        // Faded only on the side that actually pokes out from behind the leaf's face there, so a
+        // half neither pops in unblocked nor shows through the landed leaf. Opaque mid-turn.
+        val fadeIn =
+            if (sidePokesOut(page2, page1, dst, !forward)) smoothstep(t / FADE_ENDS) else 1f
+        val fadeOut =
+            if (sidePokesOut(page1, page2, dst, forward)) smoothstep((1f - t) / FADE_ENDS) else 1f
+
         val pass = beginClearedPass(encoder, dst)
         try {
-            if (surfaceFill(page1, page2)) Draw.rect(pass, 0f, 0f, 1f, 1f, background)
-            // Clipped at each spine: page 1 keeps the side the leaf left, page 2 the one it uncovers.
+            if (surfaceFill(page1, page2)) Draw.rect(pass, dst.format, 0f, 0f, 1f, 1f, background)
+            // Clipped at each spine: page 1 keeps the side the leaf left, page 2 the one it
+            // uncovers - fading in and out at the ends to match the leaf.
             if (forward) {
-                spine1?.let { blitCachedRegion(pass, cached1, 0f, 0f, it, 1f) }
-                spine2?.let { blitCachedRegion(pass, cached2, it, 0f, 1f, 1f) }
+                spine1?.let { blitCachedRegion(pass, dst.format, cached1, 0f, 0f, it, 1f, fadeOut) }
+                spine2?.let { blitCachedRegion(pass, dst.format, cached2, it, 0f, 1f, 1f, fadeIn) }
             } else {
-                spine1?.let { blitCachedRegion(pass, cached1, it, 0f, 1f, 1f) }
-                spine2?.let { blitCachedRegion(pass, cached2, 0f, 0f, it, 1f) }
+                spine1?.let { blitCachedRegion(pass, dst.format, cached1, it, 0f, 1f, 1f, fadeOut) }
+                spine2?.let { blitCachedRegion(pass, dst.format, cached2, 0f, 0f, it, 1f, fadeIn) }
             }
         } finally {
-            pass.end()
+            pass.endAndRelease()
         }
 
         val leaf = leaf(page1, page2, dst, t, forward, spine1, spine2, cached1, cached2) ?: return
@@ -247,11 +258,12 @@ object TransitionFlip : Transition() {
         val front = cached1 ?: cached2 ?: return
         val back = cached2 ?: cached1 ?: return
 
+        val targetView = dst.createView()
         val leafPass = encoder.beginRenderPass(
             GPURenderPassDescriptor(
                 colorAttachments = arrayOf(
                     GPURenderPassColorAttachment(
-                        view = dst.createView(),
+                        view = targetView,
                         loadOp = LoadOp.Load,
                         storeOp = StoreOp.Store,
                         clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
@@ -274,21 +286,22 @@ object TransitionFlip : Transition() {
             val cutLast = !leaf.hasBack
 
             if (!cutting || cutLast) {
-                attach(leafPass, pipeline, uniforms, front, back)
+                attach(leafPass, pipelines[dst.format], uniforms, front, back)
                 leafPass.draw(VERTICES)
                 // After the leaf, so the near face goes with the hole it stands in.
-                if (cutting) cut(leafPass, uniforms)
+                if (cutting) cut(leafPass, dst.format, uniforms)
             } else {
                 // Shadow first, so the cut takes it too - one hanging in the hole is cast by a
                 // sheet nobody can see.
-                attach(leafPass, pipeline, uniforms, front, back)
+                attach(leafPass, pipelines[dst.format], uniforms, front, back)
                 leafPass.draw(SHEET_VERTICES)
-                cut(leafPass, uniforms)
-                attach(leafPass, pipeline, uniforms, front, back)
+                cut(leafPass, dst.format, uniforms)
+                attach(leafPass, pipelines[dst.format], uniforms, front, back)
                 leafPass.draw(SHEET_VERTICES, 1, SHEET_VERTICES)
             }
+            uniforms.close()
         } finally {
-            leafPass.end()
+            leafPass.endAndRelease(targetView)
         }
     }
 
@@ -315,11 +328,10 @@ object TransitionFlip : Transition() {
         val rawBack = page2.leafRect(dst, left = forward)
         // A side with no page mirrors the other across the spine, to size its blank sheet by, and
         // with neither there the halves that stay put do it - otherwise nothing turns at all.
-        val sized = rawFront
-            ?: rawBack
-            ?: page1.leafRect(dst, left = forward)
-            ?: page2.leafRect(dst, left = !forward)
-            ?: return null
+        val sized = rawFront ?: rawBack ?: page1.leafRect(dst, left = forward) ?: page2.leafRect(
+            dst,
+            left = !forward
+        ) ?: return null
         val frontRect = if (rawFront != null) rawFront else mirror(sized, spine)
         val backRect = rawBack ?: mirror(frontRect, spine)
 
@@ -357,6 +369,23 @@ object TransitionFlip : Transition() {
     /** [rect] reflected across the spine - where the leaf's other face has to lie. */
     private fun mirror(rect: FloatArray, spine: Float) =
         floatArrayOf(2f * spine - rect[2], rect[1], 2f * spine - rect[0], rect[3])
+
+    /**
+     * Whether [big]'s own rect on this side reaches past [small]'s, so a face sized by [small]
+     * would not fully cover it. Both pages' real rects, not a mirrored fallback - a missing side
+     * always counts as uncovered.
+     */
+    private fun sidePokesOut(
+        big: ImagePage, small: ImagePage, dst: GPUTexture, left: Boolean
+    ): Boolean {
+        val bigRect = big.leafRect(dst, left) ?: return true
+        val smallRect = small.leafRect(dst, left) ?: return true
+        fun span(rect: FloatArray, i: Int) = rect[i + 2] - rect[i]
+        fun bigger(a: Float, b: Float) = a > b + 1e-4f
+        return bigger(span(bigRect, 0), span(smallRect, 0)) || bigger(
+            span(bigRect, 1), span(smallRect, 1)
+        )
+    }
 
     /**
      * This frame's uniforms. [blank] paints a face with no page, at [blankAlpha] - see [blankAlpha].
@@ -403,7 +432,7 @@ object TransitionFlip : Transition() {
         back: GPUTextureView,
     ) {
         pass.setPipeline(pipeline)
-        pass.setBindGroup(
+        pass.setTransientBindGroup(
             0, device.createBindGroup(
                 GPUBindGroupDescriptor(
                     layout = pipeline.getBindGroupLayout(0), entries = arrayOf(
@@ -418,9 +447,9 @@ object TransitionFlip : Transition() {
     }
 
     /** Cut the blank face out, over the leaf's own half of the grid - see [punchPipeline]. */
-    private fun cut(pass: GPURenderPassEncoder, uniforms: GPUBuffer) {
-        pass.setPipeline(punchPipeline)
-        pass.setBindGroup(
+    private fun cut(pass: GPURenderPassEncoder, format: Int, uniforms: GPUBuffer) {
+        pass.setPipeline(punchPipelines[format])
+        pass.setTransientBindGroup(
             0, device.createBindGroup(
                 GPUBindGroupDescriptor(
                     layout = punchBindGroupLayout,

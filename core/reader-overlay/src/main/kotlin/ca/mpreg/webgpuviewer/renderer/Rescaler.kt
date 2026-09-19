@@ -52,7 +52,7 @@ abstract class Rescaler {
     open fun fits(tileSize: Int): Boolean = true
 
     /** The square texture the first step renders into. Null if this rescaler can't run. */
-    open fun input(size: Int): GPUTexture? = null
+    open fun input(size: Int, format: Int): GPUTexture? = null
 
     /** [input]'s view, kept rather than remade per tile. Valid only after [input] has answered. */
     open val inputView: GPUTextureView? get() = null
@@ -61,7 +61,7 @@ abstract class Rescaler {
     open fun encode(encoder: GPUCommandEncoder, size: Int) {}
 
     /** Draw the middle of the resized result - the tile itself, halo removed - into [pass]. */
-    open fun resolve(pass: GPURenderPassEncoder) {}
+    open fun resolve(pass: GPURenderPassEncoder, format: Int) {}
 
     open fun cleanup() {}
 }

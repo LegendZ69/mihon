@@ -6,7 +6,6 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.splineBasedDecay
-import androidx.compose.foundation.AndroidEmbeddedExternalSurface
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -51,420 +50,423 @@ fun ImageViewerContinuous(
     val flingX = remember { Animatable(0f) }
     val decay = remember(density) { splineBasedDecay<Float>(density) }
 
+    // What the platform considers a fling at all. A fixed figure here was three times this on a
+    // 420dpi screen, so an ordinary flick scrolled only as far as the finger dragged it and the
+    // strip stopped dead where a list would have carried on.
+    val minFlingVelocity = remember(view) {
+        android.view.ViewConfiguration.get(view.context).scaledMinimumFlingVelocity.toFloat()
+    }
+
     LaunchedEffect(density) {
         state.density = density
     }
 
     RequestMaxRefreshRate()
 
-    // See ImageViewer.kt: AndroidEmbeddedExternalSurface over AndroidExternalSurface.
-    AndroidEmbeddedExternalSurface(
-        modifier = modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                val doubleTapTimeout = viewConfiguration.doubleTapTimeoutMillis
-                val touchSlop = viewConfiguration.touchSlop
+    val surfaceModifier = modifier
+        .fillMaxSize()
+        .pointerInput(Unit) {
+            val doubleTapTimeout = viewConfiguration.doubleTapTimeoutMillis
+            val touchSlop = viewConfiguration.touchSlop
 
-                /**
-                 * Walk a scale that overshot back into bounds about [originX]/[originY], the point
-                 * the zoom was anchored to - fractions of the viewport from its centre. False if
-                 * the scale was already fine. Position interpolates on the reciprocal of the
-                 * scale, as ImagePage.animateTo does, so the origin holds throughout.
-                 */
-                fun snapScaleIntoBounds(originX: Float, originY: Float): Boolean {
-                    val startScale = state.scale
-                    val targetScale = startScale.fastCoerceIn(state.minScale, state.maxScale)
-                    if (targetScale == startScale) return false
+            /**
+             * Walk a scale that overshot back into bounds about [originX]/[originY] - the
+             * zoom's anchor, as fractions of the viewport: [originX] from its centre, since the
+             * horizontal offset is centred, [originY] from its top, since the camera is. False
+             * if the scale was already fine. Position interpolates on 1/scale so the anchor
+             * holds.
+             */
+            fun snapScaleIntoBounds(originX: Float, originY: Float): Boolean {
+                val startScale = state.scale
+                val targetScale = startScale.fastCoerceIn(state.minScale, state.maxScale)
+                if (targetScale == startScale) return false
 
-                    val diffEnd = 1f / targetScale - 1f / startScale
-                    val startOffsetX = state.offsetX
-                    val maxOffsetX = max(0f, (targetScale - 1f) / (2f * targetScale))
-                    val endOffsetX =
-                        (startOffsetX + originX * diffEnd).fastCoerceIn(-maxOffsetX, maxOffsetX)
-                    val endScroll = -originY * diffEnd * state.height
+                val diffEnd = 1f / targetScale - 1f / startScale
+                val startOffsetX = state.offsetX
+                val maxOffsetX = max(0f, (targetScale - 1f) / (2f * targetScale))
+                val endOffsetX =
+                    (startOffsetX + originX * diffEnd).fastCoerceIn(-maxOffsetX, maxOffsetX)
+                val endScroll = -originY * diffEnd * state.height
 
-                    state.animationJob = scope.launch {
-                        state.isScaleAnimating = true
-                        var applied = 0f
-                        try {
-                            animate(
-                                0f, 1f, animationSpec = spring(
-                                    stiffness = Spring.StiffnessMediumLow,
-                                    visibilityThreshold = 0.002f
-                                )
-                            ) { t, _ ->
-                                val newScale = startScale + (targetScale - startScale) * t
-                                val c = ((1f / newScale - 1f / startScale) / diffEnd).fastCoerceIn(
-                                    0f, 1f
-                                )
-                                state.scale = newScale
-                                state.offsetX = startOffsetX + (endOffsetX - startOffsetX) * c
-                                // As a step, so scrollBy keeps its page crossings and clamp.
-                                state.scrollBy(endScroll * c - applied)
-                                applied = endScroll * c
-                                state.invalidate()
-                            }
-                        } finally {
-                            state.isScaleAnimating = false
-                        }
-                    }
-                    return true
-                }
-
-                /** Walk a pan that overshot back to the edge it overshot, the scale being fine. */
-                fun snapOffsetXIntoBounds() {
-                    val maxOffsetX = max(0f, (state.scale - 1f) / (2f * state.scale))
-                    val clampedX = state.offsetX.fastCoerceIn(-maxOffsetX, maxOffsetX)
-                    if (clampedX == state.offsetX) return
-                    state.animationJob = scope.launch {
-                        val startX = state.offsetX
+                state.animationJob = scope.launch {
+                    state.isScaleAnimating = true
+                    var applied = 0f
+                    try {
                         animate(
                             0f, 1f, animationSpec = spring(
                                 stiffness = Spring.StiffnessMediumLow,
                                 visibilityThreshold = 0.002f
                             )
                         ) { t, _ ->
-                            state.offsetX = startX + (clampedX - startX) * t
+                            val newScale = startScale + (targetScale - startScale) * t
+                            val c = ((1f / newScale - 1f / startScale) / diffEnd).fastCoerceIn(
+                                0f, 1f
+                            )
+                            state.scale = newScale
+                            state.offsetX = startOffsetX + (endOffsetX - startOffsetX) * c
+                            // As a step, so scrollBy keeps its page crossings and clamp.
+                            state.scrollBy(endScroll * c - applied)
+                            applied = endScroll * c
                             state.invalidate()
                         }
+                    } finally {
+                        state.isScaleAnimating = false
                     }
                 }
+                return true
+            }
 
-                awaitEachGesture {
-                    val firstDown = awaitFirstDown(pass = PointerEventPass.Initial)
-                    state.animationJob?.cancel()
-                    view.parent?.requestDisallowInterceptTouchEvent(true)
-
-                    // A touch on moving content only stops it - see ImageViewer.kt's copy of
-                    // this guard for what that suppresses and why the flags are cleared here.
-                    val stoppedMotion = state.isScaleAnimating || state.isFlinging
-                    if (stoppedMotion) {
-                        state.isScaleAnimating = false
-                        state.isFlinging = false
+            /** Walk a pan that overshot back to its edge, the scale being fine. */
+            fun snapOffsetXIntoBounds() {
+                val maxOffsetX = max(0f, (state.scale - 1f) / (2f * state.scale))
+                val clampedX = state.offsetX.fastCoerceIn(-maxOffsetX, maxOffsetX)
+                if (clampedX == state.offsetX) return
+                state.animationJob = scope.launch {
+                    val startX = state.offsetX
+                    animate(
+                        0f, 1f, animationSpec = spring(
+                            stiffness = Spring.StiffnessMediumLow,
+                            visibilityThreshold = 0.002f
+                        )
+                    ) { t, _ ->
+                        state.offsetX = startX + (clampedX - startX) * t
                         state.invalidate()
                     }
+                }
+            }
 
-                    var longPressed = false
-                    val longPressJob = if (stoppedMotion) null else scope.launch {
-                        delay(viewConfiguration.longPressTimeoutMillis.milliseconds)
-                        longPressed = true
-                        state.onLongTap?.invoke(
-                            Offset(
-                                firstDown.position.x / state.width,
-                                firstDown.position.y / state.height
-                            )
+            awaitEachGesture {
+                val firstDown = awaitFirstDown(pass = PointerEventPass.Initial)
+                state.animationJob?.cancel()
+                view.parent?.requestDisallowInterceptTouchEvent(true)
+
+                // A touch on moving content only stops it - see ImageViewer.kt's copy.
+                val stoppedMotion = state.isScaleAnimating || state.isFlinging
+                if (stoppedMotion) {
+                    state.isScaleAnimating = false
+                    state.isFlinging = false
+                    state.invalidate()
+                }
+
+                var longPressed = false
+                val longPressJob = if (stoppedMotion) null else scope.launch {
+                    delay(viewConfiguration.longPressTimeoutMillis.milliseconds)
+                    longPressed = true
+                    state.onLongTap?.invoke(
+                        Offset(
+                            firstDown.position.x / state.width,
+                            firstDown.position.y / state.height
                         )
+                    )
+                }
+
+                if (waitForCleanUp(firstDown.id, doubleTapTimeout, touchSlop) != null) {
+                    longPressJob?.cancel()
+                    // A touch that only stopped motion can still be the first of a pair.
+                    val secondDown = waitForDown(doubleTapTimeout)
+                    if (secondDown == null) {
+                        if (!stoppedMotion) {
+                            state.onTap?.invoke(
+                                Offset(
+                                    firstDown.position.x / state.width,
+                                    firstDown.position.y / state.height
+                                )
+                            )
+                        }
+                        return@awaitEachGesture
                     }
 
-                    if (waitForCleanUp(firstDown.id, doubleTapTimeout, touchSlop) != null) {
-                        longPressJob?.cancel()
-                        // Tap - wait for a double tap. A touch that only stopped motion waits
-                        // too: no single tap below, but it can still be the first of a pair.
-                        val secondDown = waitForDown(doubleTapTimeout)
-                        if (secondDown == null) {
-                            // Single tap
-                            if (!stoppedMotion) {
-                                state.onTap?.invoke(
-                                    Offset(
-                                        firstDown.position.x / state.width,
-                                        firstDown.position.y / state.height
-                                    )
-                                )
-                            }
-                            return@awaitEachGesture
-                        }
-
-                        if (waitForCleanUp(secondDown.id, doubleTapTimeout, touchSlop) != null) {
-                            // Double tap: toggle zoom
-                            if (state.scale > state.minScale + 0.1f) {
-                                // Zoom out: animate offsetX to 0, anchor Y to tap point
-                                val py = secondDown.position.y / state.height - 0.5f
-                                state.animationJob = scope.launch {
-                                    state.isScaleAnimating = true
-                                    try {
-                                        val startScale = state.scale
-                                        val startOffsetX = state.offsetX
-                                        val totalDiff = 1f / state.minScale - 1f / startScale
-                                        val px =
-                                            if (totalDiff != 0f) -startOffsetX / totalDiff else 0f
-                                        animate(
-                                            0f, 1f, animationSpec = spring(
-                                                stiffness = Spring.StiffnessMediumLow,
-                                                visibilityThreshold = 0.002f
-                                            )
-                                        ) { t, _ ->
-                                            val newScale =
-                                                startScale + (state.minScale - startScale) * t
-                                            val diff = 1f / newScale - 1f / state.scale
-                                            state.offsetX += px * diff
-                                            state.scale = newScale
-                                            state.scrollBy(-py * diff * state.height)
-                                            state.invalidate()
-                                        }
-                                    } finally {
-                                        state.isScaleAnimating = false
+                    if (waitForCleanUp(secondDown.id, doubleTapTimeout, touchSlop) != null) {
+                        if (!state.doubleTapZoomEnabled) return@awaitEachGesture
+                        if (!state.atHomeScale) {
+                            val py = secondDown.position.y / state.height
+                            state.animationJob = scope.launch {
+                                state.isScaleAnimating = true
+                                try {
+                                    val startScale = state.scale
+                                    val startOffsetX = state.offsetX
+                                    val totalDiff = 1f / state.homeScale - 1f / startScale
+                                    val px =
+                                        if (totalDiff != 0f) -startOffsetX / totalDiff else 0f
+                                    animate(
+                                        0f, 1f, animationSpec = spring(
+                                            stiffness = Spring.StiffnessMediumLow,
+                                            visibilityThreshold = 0.002f
+                                        )
+                                    ) { t, _ ->
+                                        val newScale =
+                                            startScale + (state.homeScale - startScale) * t
+                                        val diff = 1f / newScale - 1f / state.scale
+                                        state.offsetX += px * diff
+                                        state.scale = newScale
+                                        state.scrollBy(-py * diff * state.height)
+                                        state.invalidate()
                                     }
-                                }
-                            } else {
-                                // Zoom in at tap point
-                                val px = secondDown.position.x / state.width - 0.5f
-                                val py = secondDown.position.y / state.height - 0.5f
-                                state.animationJob = scope.launch {
-                                    state.isScaleAnimating = true
-                                    try {
-                                        val startScale = state.scale
-                                        val startOffsetX = state.offsetX
-                                        animate(
-                                            0f, 1f, animationSpec = spring(
-                                                stiffness = Spring.StiffnessMediumLow,
-                                                visibilityThreshold = 0.002f
-                                            )
-                                        ) { t, _ ->
-                                            val newScale =
-                                                startScale + (state.doubleTapScale - startScale) * t
-                                            val diff = 1f / newScale - 1f / state.scale
-                                            state.offsetX += px * diff
-                                            state.scale = newScale
-                                            state.scrollBy(-py * diff * state.height)
-                                            state.invalidate()
-                                        }
-                                    } finally {
-                                        state.isScaleAnimating = false
-                                    }
+                                } finally {
+                                    state.isScaleAnimating = false
                                 }
                             }
                         } else {
-                            // Double tap drag: zoom by dragging
-                            val velocityTracker = VelocityTracker()
-                            velocityTracker.addPointerInputChange(secondDown)
-                            val dragPointerId = secondDown.id
-                            val originalScale = state.scale
-                            val originalOffsetX = state.offsetX
-                            // Zoom anchors the tap point, and the scroll that needs is a
-                            // function of the total scale change - so it is applied as the step
-                            // since the last frame. Page crossings and the end of the document
-                            // are scrollBy's to keep, and it is the only thing that keeps them.
-                            var anchorApplied = 0f
-                            fun anchorScroll(target: Float) {
-                                state.scrollBy(target - anchorApplied)
-                                anchorApplied = target
-                            }
-
                             val px = secondDown.position.x / state.width - 0.5f
-                            val py = secondDown.position.y / state.height - 0.5f
-                            var totalDeltaY = 0f
-
-                            state.isScaleAnimating = true
-                            var willFlingZoom = false
-                            try {
-                                while (true) {
-                                    val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                                    val change =
-                                        event.changes.firstOrNull { it.id == dragPointerId }
-                                    if (change == null || change.changedToUp() || change.isConsumed) break
-
-                                    velocityTracker.addPointerInputChange(change)
-
-                                    if (change.positionChanged()) {
-                                        val pan = event.calculatePan()
-                                        totalDeltaY += pan.y
-
-                                        if (totalDeltaY != 0f) {
-                                            val newScale =
-                                                originalScale * 10f.pow(2 * totalDeltaY / state.height)
-                                            val diff = 1f / newScale - 1f / originalScale
-                                            state.scale = newScale
-                                            state.offsetX = originalOffsetX + px * diff
-                                            anchorScroll(-py * diff * state.height)
-                                            state.invalidate()
-                                            change.consume()
-                                        }
+                            val py = secondDown.position.y / state.height
+                            state.animationJob = scope.launch {
+                                state.isScaleAnimating = true
+                                try {
+                                    val startScale = state.scale
+                                    val startOffsetX = state.offsetX
+                                    animate(
+                                        0f, 1f, animationSpec = spring(
+                                            stiffness = Spring.StiffnessMediumLow,
+                                            visibilityThreshold = 0.002f
+                                        )
+                                    ) { t, _ ->
+                                        val newScale =
+                                            startScale + (state.doubleTapScale - startScale) * t
+                                        val diff = 1f / newScale - 1f / state.scale
+                                        state.offsetX += px * diff
+                                        state.scale = newScale
+                                        state.scrollBy(-py * diff * state.height)
+                                        state.invalidate()
                                     }
+                                } finally {
+                                    state.isScaleAnimating = false
                                 }
-                                val dragVelocity = velocityTracker.calculateVelocity()
-                                // Decided before the finally below, so isScaleAnimating has no
-                                // gap between this drag ending and its fling starting.
-                                willFlingZoom =
-                                    abs(dragVelocity.y) > 200 && state.scale > state.minScale && state.scale < state.maxScale
-                            } finally {
-                                if (!willFlingZoom) state.isScaleAnimating = false
-                            }
-
-                            val velocity = velocityTracker.calculateVelocity()
-                            if (willFlingZoom) {
-                                // Fling zoom
-                                state.animationJob = scope.launch(NormalMotionDurationScale) {
-                                    try {
-                                        Animatable(0f).animateDecay(
-                                            velocity.y, exponentialDecay()
-                                        ) {
-                                            val newScale =
-                                                (originalScale * 10f.pow(2 * (totalDeltaY + value) / state.height)).fastCoerceIn(
-                                                    state.minScale, state.maxScale
-                                                )
-                                            val diff = 1f / newScale - 1f / originalScale
-                                            val maxOffsetX =
-                                                max(0f, (newScale - 1f) / (2f * newScale))
-                                            state.scale = newScale
-                                            state.offsetX =
-                                                (originalOffsetX + px * diff).fastCoerceIn(
-                                                    -maxOffsetX, maxOffsetX
-                                                )
-                                            anchorScroll(-py * diff * state.height)
-                                            state.invalidate()
-                                        }
-                                    } finally {
-                                        state.isScaleAnimating = false
-                                    }
-                                }
-                            } else if (!snapScaleIntoBounds(px, py)) {
-                                // Only the pan overshot.
-                                snapOffsetXIntoBounds()
                             }
                         }
                     } else {
-                        // Drag gesture
+                        // Double tap drag: zoom by dragging
                         val velocityTracker = VelocityTracker()
-                        velocityTracker.addPointerInputChange(firstDown)
-
-                        var single = true
-                        var zoomOriginX = 0f
-                        var zoomOriginY = 0f
-                        var lastMoveTime = firstDown.uptimeMillis
-                        var lastEventTime = firstDown.uptimeMillis
-
-                        var canceled = false
-                        try {
-                            do {
-                                val event = awaitPointerEvent()
-                                canceled = event.changes.any { it.isConsumed }
-                                if (!canceled) {
-                                    val change = event.changes[0]
-
-                                    if (event.changes.size > 1 && event.changes.all { it.pressed }) {
-                                        if (single) {
-                                            longPressJob?.cancel()
-                                            velocityTracker.resetTracking()
-                                        }
-                                        single = false
-                                    }
-
-                                    velocityTracker.addPointerInputChange(change)
-
-                                    val pan = event.calculatePan()
-                                    val zoom = event.calculateZoom()
-                                    // Whenever two fingers are down: a quiet moment mid-pinch is
-                                    // still a pinch, and generation stays held off.
-                                    state.isScaleAnimating =
-                                        event.changes.size > 1 && event.changes.all { it.pressed }
-
-                                    lastEventTime = change.uptimeMillis
-                                    if (change.positionChanged()) lastMoveTime = change.uptimeMillis
-
-                                    if (pan != Offset.Zero || zoom != 1f) {
-                                        longPressJob?.cancel()
-
-                                        if (zoom != 1f) {
-                                            velocityTracker.resetTracking()
-                                            val centroid =
-                                                event.calculateCentroid(useCurrent = true)
-                                            val newScale = state.scale * zoom
-                                            val diff = 1f / newScale - 1f / state.scale
-                                            val cx = centroid.x / state.width - 0.5f
-                                            val cy = centroid.y / state.height - 0.5f
-                                            // What the snap-back below anchors to.
-                                            zoomOriginX = cx
-                                            zoomOriginY = cy
-                                            state.offsetX += cx * diff
-                                            state.scale = newScale
-                                            state.scrollBy(-cy * diff * state.height)
-                                        }
-
-                                        if (single) {
-                                            val maxOffsetX =
-                                                max(0f, (state.scale - 1f) / (2f * state.scale))
-                                            state.offsetX =
-                                                (state.offsetX + pan.x / state.width / state.scale).fastCoerceIn(
-                                                    -maxOffsetX, maxOffsetX
-                                                )
-                                        } else {
-                                            state.offsetX += pan.x / state.width / state.scale
-                                        }
-                                        state.scrollBy(-pan.y / state.scale)
-                                        state.invalidate()
-                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                    }
-                                }
-                            } while (!canceled && event.changes.any { it.pressed })
-                        } finally {
-                            state.isScaleAnimating = false
+                        velocityTracker.addPointerInputChange(secondDown)
+                        val dragPointerId = secondDown.id
+                        val originalScale = state.scale
+                        val originalOffsetX = state.offsetX
+                        // The anchoring scroll follows the total scale change, but must go
+                        // through scrollBy as a step: only scrollBy crosses pages and clamps.
+                        var anchorApplied = 0f
+                        fun anchorScroll(target: Float) {
+                            state.scrollBy(target - anchorApplied)
+                            anchorApplied = target
                         }
 
-                        longPressJob?.cancel()
-                        if (longPressed || canceled) return@awaitEachGesture
+                        val px = secondDown.position.x / state.width - 0.5f
+                        val py = secondDown.position.y / state.height
+                        var totalDeltaY = 0f
 
-                        if (!snapScaleIntoBounds(zoomOriginX, zoomOriginY)) {
-                            // Scale in bounds: fling pan or snap offsetX
-                            val velocity = velocityTracker.calculateVelocity()
-                            // Held still before lifting: no fling, however fast it got there.
-                            if ((lastEventTime - lastMoveTime) < 100 &&
-                                (abs(velocity.y) > 400 || abs(velocity.x) > 400)
-                            ) {
-                                state.animationJob = scope.launch(NormalMotionDurationScale) {
-                                    state.isFlinging = true
-                                    try {
-                                        val speed = hypot(velocity.x, velocity.y)
-                                        val dirX = velocity.x / speed
-                                        val dirY = velocity.y / speed
-                                        flingX.snapTo(0f)
-                                        var last = 0f
-                                        flingX.animateDecay(speed, decay) {
-                                            val delta = value - last
-                                            last = value
-                                            val maxOffsetX =
-                                                max(0f, (state.scale - 1f) / (2f * state.scale))
-                                            val prevOffsetX = state.offsetX
-                                            val prevScrollY = state.scrollY
-                                            state.offsetX =
-                                                (state.offsetX + dirX * delta / state.width / state.scale).fastCoerceIn(
-                                                    -maxOffsetX, maxOffsetX
-                                                )
-                                            state.scrollBy(-dirY * delta / state.scale)
-                                            state.invalidate()
-                                            // Pinned on both axes: the decay would run on
-                                            // without moving anything, swallowing the next tap
-                                            // as "mid-fling". It never reverses, so one such
-                                            // frame settles it - but only one that asked for a
-                                            // move, the first frame being the initial value.
-                                            if (delta != 0f && state.offsetX == prevOffsetX && state.scrollY == prevScrollY) {
-                                                throw FlingStalled()
-                                            }
-                                        }
-                                    } catch (_: FlingStalled) {
-                                        // Nothing left to glide.
-                                    } finally {
-                                        // A final invalidate so generation resumes promptly rather
-                                        // than waiting on whatever gesture happens to invalidate next.
-                                        state.isFlinging = false
+                        state.isScaleAnimating = true
+                        var willFlingZoom = false
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                                val change =
+                                    event.changes.firstOrNull { it.id == dragPointerId }
+                                if (change == null || change.changedToUp() || change.isConsumed) break
+
+                                velocityTracker.addPointerInputChange(change)
+
+                                if (change.positionChanged()) {
+                                    val pan = event.calculatePan()
+                                    totalDeltaY += pan.y
+
+                                    if (totalDeltaY != 0f) {
+                                        val newScale =
+                                            originalScale * 10f.pow(2 * totalDeltaY / state.height)
+                                        val diff = 1f / newScale - 1f / originalScale
+                                        state.scale = newScale
+                                        state.offsetX = originalOffsetX + px * diff
+                                        anchorScroll(-py * diff * state.height)
                                         state.invalidate()
+                                        change.consume()
                                     }
                                 }
-                            } else {
-                                snapOffsetXIntoBounds()
                             }
+                            val dragVelocity = velocityTracker.calculateVelocity()
+                            // Before the finally below, so isScaleAnimating has no gap
+                            // between this drag ending and its fling starting.
+                            willFlingZoom =
+                                abs(dragVelocity.y) > 200 && state.scale > state.minScale && state.scale < state.maxScale
+                        } finally {
+                            if (!willFlingZoom) state.isScaleAnimating = false
+                        }
+
+                        val velocity = velocityTracker.calculateVelocity()
+                        if (willFlingZoom) {
+                            state.animationJob = scope.launch(NormalMotionDurationScale) {
+                                try {
+                                    Animatable(0f).animateDecay(
+                                        velocity.y, exponentialDecay()
+                                    ) {
+                                        val newScale =
+                                            (originalScale * 10f.pow(2 * (totalDeltaY + value) / state.height)).fastCoerceIn(
+                                                state.minScale, state.maxScale
+                                            )
+                                        val diff = 1f / newScale - 1f / originalScale
+                                        val maxOffsetX =
+                                            max(0f, (newScale - 1f) / (2f * newScale))
+                                        state.scale = newScale
+                                        state.offsetX =
+                                            (originalOffsetX + px * diff).fastCoerceIn(
+                                                -maxOffsetX, maxOffsetX
+                                            )
+                                        anchorScroll(-py * diff * state.height)
+                                        state.invalidate()
+                                    }
+                                } finally {
+                                    state.isScaleAnimating = false
+                                }
+                            }
+                        } else if (!snapScaleIntoBounds(px, py)) {
+                            // Only the pan overshot.
+                            snapOffsetXIntoBounds()
+                        }
+                    }
+                } else {
+                    val velocityTracker = VelocityTracker()
+                    velocityTracker.addPointerInputChange(firstDown)
+
+                    var single = true
+                    var zoomOriginX = 0f
+                    var zoomOriginY = 0f
+                    var lastMoveTime = firstDown.uptimeMillis
+                    var lastEventTime = firstDown.uptimeMillis
+
+                    var canceled = false
+                    state.isPanning = true
+                    try {
+                        do {
+                            val event = awaitPointerEvent()
+                            canceled = event.changes.any { it.isConsumed }
+                            if (!canceled) {
+                                val change = event.changes[0]
+
+                                if (event.changes.size > 1 && event.changes.all { it.pressed }) {
+                                    if (single) {
+                                        longPressJob?.cancel()
+                                        velocityTracker.resetTracking()
+                                    }
+                                    single = false
+                                }
+
+                                velocityTracker.addPointerInputChange(change)
+
+                                val pan = event.calculatePan()
+                                // Off leaves two fingers panning without scaling.
+                                val zoom = if (state.pinchZoomEnabled) event.calculateZoom() else 1f
+                                // Any two fingers down: a quiet moment mid-pinch is still
+                                // a pinch, so generation stays held off.
+                                state.isScaleAnimating =
+                                    event.changes.size > 1 && event.changes.all { it.pressed }
+
+                                lastEventTime = change.uptimeMillis
+                                if (change.positionChanged()) lastMoveTime = change.uptimeMillis
+
+                                if (pan != Offset.Zero || zoom != 1f) {
+                                    longPressJob?.cancel()
+
+                                    if (zoom != 1f) {
+                                        velocityTracker.resetTracking()
+                                        val centroid =
+                                            event.calculateCentroid(useCurrent = true)
+                                        val newScale = state.scale * zoom
+                                        val diff = 1f / newScale - 1f / state.scale
+                                        val cx = centroid.x / state.width - 0.5f
+                                        val cy = centroid.y / state.height
+                                        // What the snap-back below anchors to.
+                                        zoomOriginX = cx
+                                        zoomOriginY = cy
+                                        state.offsetX += cx * diff
+                                        state.scale = newScale
+                                        state.scrollBy(-cy * diff * state.height)
+                                    }
+
+                                    if (single) {
+                                        val maxOffsetX =
+                                            max(0f, (state.scale - 1f) / (2f * state.scale))
+                                        state.offsetX =
+                                            (state.offsetX + pan.x / state.width / state.scale).fastCoerceIn(
+                                                -maxOffsetX, maxOffsetX
+                                            )
+                                    } else {
+                                        state.offsetX += pan.x / state.width / state.scale
+                                    }
+                                    state.scrollBy(-pan.y / state.scale)
+                                    state.invalidate()
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            }
+                        } while (!canceled && event.changes.any { it.pressed })
+                    } finally {
+                        state.isScaleAnimating = false
+                        state.isPanning = false
+                    }
+
+                    longPressJob?.cancel()
+                    if (longPressed || canceled) return@awaitEachGesture
+
+                    if (!snapScaleIntoBounds(zoomOriginX, zoomOriginY)) {
+                        val velocity = velocityTracker.calculateVelocity()
+                        // Held still before lifting: no fling, however fast it got there.
+                        if ((lastEventTime - lastMoveTime) < 100 &&
+                            (abs(velocity.y) > minFlingVelocity || abs(velocity.x) > minFlingVelocity)
+                        ) {
+                            state.animationJob = scope.launch(NormalMotionDurationScale) {
+                                state.isFlinging = true
+                                try {
+                                    val speed = hypot(velocity.x, velocity.y)
+                                    val dirX = velocity.x / speed
+                                    val dirY = velocity.y / speed
+                                    flingX.snapTo(0f)
+                                    var last = 0f
+                                    flingX.animateDecay(speed, decay) {
+                                        val delta = value - last
+                                        last = value
+                                        val maxOffsetX =
+                                            max(0f, (state.scale - 1f) / (2f * state.scale))
+                                        val prevOffsetX = state.offsetX
+                                        val prevScrollY = state.scrollY
+                                        state.offsetX =
+                                            (state.offsetX + dirX * delta / state.width / state.scale).fastCoerceIn(
+                                                -maxOffsetX, maxOffsetX
+                                            )
+                                        state.scrollBy(-dirY * delta / state.scale)
+                                        state.invalidate()
+                                        // Pinned on both axes: the decay would run on
+                                        // without moving, swallowing the next tap as
+                                        // "mid-fling". It never reverses, so one frame
+                                        // settles it - but only one that asked to move.
+                                        if (delta != 0f && state.offsetX == prevOffsetX && state.scrollY == prevScrollY) {
+                                            throw FlingStalled()
+                                        }
+                                    }
+                                } catch (_: FlingStalled) {
+                                } finally {
+                                    // Invalidate so generation resumes without waiting on the
+                                    // next gesture.
+                                    state.isFlinging = false
+                                    state.invalidate()
+                                }
+                            }
+                        } else {
+                            snapOffsetXIntoBounds()
                         }
                     }
                 }
-            }, isOpaque = false
-    ) {
-        onSurface { surface, width, height ->
-            try {
-                state.init(scope, surface, width, height)
-                state.invalidate()
-                state.collect()
-            } finally {
-                state.cleanup()
             }
+        }
+
+    ViewerSurface(surfaceModifier) { surface, width, height ->
+        try {
+            // Before init: the panel's HDR support gates the decode path, which can reach
+            // an image before the first frame.
+            attachHdrDisplay(view)
+            state.init(scope, surface, width, height)
+            surface.onChanged { w, h -> state.resize(w, h) }
+            // After init, so Hdr.resolve has run and the surface's capability is known.
+            attachHdrSurface(view)
+            state.invalidate()
+            state.collect()
+        } finally {
+            attachHdrSurface(null)
+            state.cleanup()
         }
     }
 }

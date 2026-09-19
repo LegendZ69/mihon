@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPUTexture
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
+import ca.mpreg.webgpuviewer.renderer.endAndRelease
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 
 object TransitionStackUp : Transition() {
@@ -25,17 +26,17 @@ object TransitionStackUp : Transition() {
         try {
             if (frac > 0f) {
                 page2.drawBackgroundColumns(pass, dst, 0f, 0f)
-                blitCached(pass, cached2, 0f, 0f)
+                blitCached(pass, dst.format, cached2, 0f, 0f)
                 page1.drawBackgroundColumns(pass, dst, 0f, -frac)
-                blitCached(pass, cached1, 0f, -frac)
+                blitCached(pass, dst.format, cached1, 0f, -frac)
             } else {
                 page1.drawBackgroundColumns(pass, dst, 0f, 0f)
-                blitCached(pass, cached1, 0f, 0f)
+                blitCached(pass, dst.format, cached1, 0f, 0f)
                 page2.drawBackgroundColumns(pass, dst, 0f, -(frac + 1f))
-                blitCached(pass, cached2, 0f, -(frac + 1f))
+                blitCached(pass, dst.format, cached2, 0f, -(frac + 1f))
             }
         } finally {
-            pass.end()
+            pass.endAndRelease()
         }
     }
 }

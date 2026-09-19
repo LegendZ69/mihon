@@ -74,6 +74,7 @@ import ca.mpreg.webgpuviewer.renderer.TileRenderer.Companion.TILE_SIZE_MARGIN
 import ca.mpreg.webgpuviewer.renderer.TileRenderer.Companion.TILE_SIZE_SAMPLES
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -316,7 +317,12 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
 
     private var frame = 0L
     private var workerActive = false
-    private val workerScope = CoroutineScope(WebGpuRenderer.dispatcher + SupervisorJob())
+    // Tiles are an optimisation over drawing pages directly: a failure in the worker is logged, never
+    // left to reach the thread's uncaught exception handler and end the process.
+    private val workerScope = CoroutineScope(
+        WebGpuRenderer.dispatcher + SupervisorJob() +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "Tile worker failed", e) },
+    )
 
     // Timestamp-query based GPU cost measurement for [generateTile]'s batches - null wherever the
     // adapter didn't have the feature (see WebGpuRenderer's requiredFeatures), in which case
@@ -347,8 +353,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
     private fun releaseTimestampBuffers(buffers: TimestampBuffers) {
         // A batch never has more in flight than this.
         if (timestampPool.size >= MAX_TILES_PER_BATCH) {
-            buffers.resolve.destroy()
-            buffers.result.destroy()
+            buffers.resolve.destroyAndRelease()
+            buffers.result.destroyAndRelease()
         } else {
             timestampPool.addLast(buffers)
         }
@@ -453,12 +459,12 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
      * Every tile in one texture, carved into [SLAB_SIZE] slabs. A slab holds slots of a single
      * tile size and returns to the pool once fully free, so sizes mix within one bind group.
      */
-    private inner class TileAtlas(val side: Int) {
+    private inner class TileAtlas(val side: Int, val format: Int) {
         val texture: GPUTexture = device.createTexture(
             GPUTextureDescriptor(
                 size = GPUExtent3D(side, side),
                 usage = TextureUsage.CopyDst or TextureUsage.TextureBinding,
-                format = TextureFormat.RGBA8Unorm
+                format = format
             )
         )
 
@@ -474,7 +480,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
                 GPUTextureDescriptor(
                     size = GPUExtent3D(tileSize, tileSize),
                     usage = TextureUsage.RenderAttachment or TextureUsage.CopySrc,
-                    format = TextureFormat.RGBA8Unorm
+                    format = format
                 )
             )
         }
@@ -559,8 +565,12 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             )
 
         fun destroy() {
-            scratches.values.forEach { it.destroy() }
-            texture.destroy()
+            scratchViews.values.forEach { it.close() }
+            scratchViews.clear()
+            scratches.values.forEach { it.destroyAndRelease() }
+            scratches.clear()
+            view.close()
+            texture.destroyAndRelease()
         }
     }
 
@@ -568,8 +578,11 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
     // is sized against is known by then.
     private var atlasOrNull: TileAtlas? = null
 
+    // Torn down in [newFrame], never here: a getter runs wherever it is first touched, which
+    // can be mid-draw, holding one of the page grids the teardown destroys.
     private val atlas: TileAtlas
-        get() = atlasOrNull ?: TileAtlas(atlasSide()).also { atlasOrNull = it }
+        get() = atlasOrNull
+            ?: TileAtlas(atlasSide(), Hdr.frameFormat).also { atlasOrNull = it }
 
     /** Square, whole slabs, big enough for [budgetTiles] tiles of [TILE_SIZE]. */
     private fun atlasSide(): Int {
@@ -678,13 +691,13 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             tiles.values.forEach { atlas?.release(tileSize, it.atlasOrigin) }
             tiles.clear()
             pending.clear()
-            instances?.destroy()
+            instances?.destroyAndRelease()
             instances = null
             instanceCapacity = 0
             instanceCount = 0
             bindGroup?.close()
             bindGroup = null
-            frameUniform.destroy()
+            frameUniform.destroyAndRelease()
         }
     }
 
@@ -747,7 +760,10 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         )
     }
 
-    private fun buildBlitPipeline(depthStencil: GPUDepthStencilState?): GPURenderPipeline {
+    private fun buildBlitPipeline(
+        format: Int,
+        depthStencil: GPUDepthStencilState?
+    ): GPURenderPipeline {
         val shaderModule = device.createShaderModule(
             GPUShaderModuleDescriptor(shaderSourceWGSL = GPUShaderSourceWGSL(BLIT_SHADER))
         )
@@ -774,7 +790,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
                         GPUColorTargetState(
                             // Tiles hold RenderPage's output, which is premultiplied, so One
                             // rather than SrcAlpha.
-                            format = TextureFormat.RGBA8Unorm, blend = GPUBlendState(
+                            format = format, blend = GPUBlendState(
                                 color = GPUBlendComponent(
                                     srcFactor = BlendFactor.One,
                                     dstFactor = BlendFactor.OneMinusSrcAlpha,
@@ -795,7 +811,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
     }
 
     /** Plain blit, no stencil attachment - [blitAvailableTiles]/[renderFullyTiled]'s own pass. */
-    private val blitPipeline: GPURenderPipeline by lazy { buildBlitPipeline(null) }
+    private val blitPipelines = FormatKeyed { format -> buildBlitPipeline(format, null) }
 
     /**
      * As [blitPipeline], but always writes 1 into the stencil attachment wherever it draws - for
@@ -804,9 +820,9 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
      * so a pixel [RenderPage] would otherwise redraw stays skipped once this stencil value marks
      * it done. See [stencilViewFor].
      */
-    private val blitPipelineStencilWrite: GPURenderPipeline by lazy {
+    private val blitPipelinesStencilWrite = FormatKeyed { format ->
         buildBlitPipeline(
-            GPUDepthStencilState(
+            format, GPUDepthStencilState(
                 format = TextureFormat.Stencil8,
                 depthWriteEnabled = OptionalBool.False,
                 depthCompare = CompareFunction.Always,
@@ -841,7 +857,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             stencilWidth = dst.width
             stencilHeight = dst.height
             for (i in 0 until STENCIL_BUFFER_COUNT) {
-                stencilTextures[i]?.destroy()
+                stencilViews[i]?.close()
+                stencilTextures[i]?.destroyAndRelease()
                 val texture = device.createTexture(
                     GPUTextureDescriptor(
                         usage = TextureUsage.RenderAttachment,
@@ -863,6 +880,19 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
      */
     fun newFrame() {
         frame++
+
+        // Every cached tile is at the old format, so an HDR change takes the whole atlas. Here
+        // only: this is the one point in a frame where no caller holds a grid, and tearing one
+        // down mid-draw leaves the caller writing a destroyed uniform buffer - a segfault.
+        atlasOrNull?.let { existing ->
+            if (existing.format != Hdr.frameFormat) {
+                pages.values.forEach { it.destroyAll(existing) }
+                pages.clear()
+                existing.destroy()
+                atlasOrNull = null
+            }
+        }
+
         if (pages.isEmpty()) return
         val it = pages.iterator()
         while (it.hasNext()) {
@@ -1028,6 +1058,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         dst: GPUTexture,
         cameraDocY: Float,
         docTop: Float,
+        pageHeight: Float,
         viewerOffsetX: Float,
         scale: Float
     ): ContinuousAnchor? {
@@ -1038,8 +1069,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             dst.width / 2f + scale * (viewerOffsetX * dst.width + WebGpuRenderer.offsetX * dst.width)
         val anchorY =
             dst.height / 2f - scale * cameraDocY + scale * WebGpuRenderer.offsetY * dst.height
-        val pageHeightDoc = page.height * pageScaleAtZoom1
-        val centerYOffset = scale * (docTop + pageHeightDoc / 2f)
+        // The caller's measured height, never one derived here - the two must agree exactly.
+        val centerYOffset = scale * (docTop + pageHeight / 2f)
         return ContinuousAnchor(pageScale, anchorX, anchorY, centerYOffset)
     }
 
@@ -1178,8 +1209,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
 
     /**
      * Blit [page]'s cached tiles and enqueue the missing ones - the continuous viewer's
-     * placement, via [cameraDocY] (the camera's document position) and [docTop] (this page's
-     * own, both in screen pixels at zoom 1).
+     * placement, via [cameraDocY] (the camera's document position), [docTop] (this page's own
+     * top) and [pageHeight] (its content height - all in screen pixels at zoom 1).
      *
      * Rounds only the shared *camera* anchor, leaving each page's own offset from it exact -
      * unlike the paged overload, several pages can draw through here in the same frame, and
@@ -1194,12 +1225,13 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         dst: GPUTexture,
         cameraDocY: Float,
         docTop: Float,
+        pageHeight: Float,
         viewerOffsetX: Float,
         scale: Float,
         suppressGeneration: Boolean
     ): Boolean {
-        val a =
-            continuousAnchor(page, dst, cameraDocY, docTop, viewerOffsetX, scale) ?: return false
+        val a = continuousAnchor(page, dst, cameraDocY, docTop, pageHeight, viewerOffsetX, scale)
+            ?: return false
         return drawCore(
             pass,
             page,
@@ -1235,6 +1267,9 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
     ): Boolean {
         if (page.destroyed || !page.highQuality || page.isAnimated) return false
         if (!page.hasUploadedImage) return false
+
+        // Unlike drawGridForFullPage, nothing else on this path reports the draw to Hdr.
+        page.currentImage?.let { if (it.isHdr) Hdr.noteHdrDrawn(it, it.hdrHeadroom) }
 
         viewportWidth = dst.width
         viewportHeight = dst.height
@@ -1315,7 +1350,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             }
         }
 
-        drawInstanced(pass, st, useStencilMask)
+        drawInstanced(pass, dst.format, st, useStencilMask)
 
         // Drop what fell outside the wanted range, else a page scrolling past keeps accumulating
         // tiles. Only when the range moved - a scroll crosses a tile boundary every tile-size
@@ -1344,17 +1379,17 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
      * nothing - that lives in the uniform.
      */
     private fun drawInstanced(
-        pass: GPURenderPassEncoder, st: PageTiles, useStencilMask: Boolean
+        pass: GPURenderPassEncoder, format: Int, st: PageTiles, useStencilMask: Boolean
     ) {
         if (st.instancesDirty) uploadInstances(st)
         val instances = st.instances ?: return
         if (st.instanceCount == 0) return
 
         if (useStencilMask) {
-            pass.setPipeline(blitPipelineStencilWrite)
+            pass.setPipeline(blitPipelinesStencilWrite[format])
             pass.setStencilReference(1)
         } else {
-            pass.setPipeline(blitPipeline)
+            pass.setPipeline(blitPipelines[format])
         }
         pass.setBindGroup(0, st.bindGroup ?: gridBindGroup(st).also { st.bindGroup = it })
         pass.setVertexBuffer(0, instances)
@@ -1365,7 +1400,12 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
      * Blit exactly [keys] - for a caller that just generated tiles into a pass that already drew
      * the rest. Its own buffer: Dawn keeps a destroyed one alive until its commands retire.
      */
-    private fun drawTiles(pass: GPURenderPassEncoder, st: PageTiles, keys: List<Long>) {
+    private fun drawTiles(
+        pass: GPURenderPassEncoder,
+        format: Int,
+        st: PageTiles,
+        keys: List<Long>
+    ) {
         val present = keys.mapNotNull { tkey -> st.tiles[tkey]?.let { tkey to it } }
         if (present.isEmpty()) return
 
@@ -1388,11 +1428,11 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         )
         device.queue.writeBuffer(instances, 0, bytes)
 
-        pass.setPipeline(blitPipeline)
+        pass.setPipeline(blitPipelines[format])
         pass.setBindGroup(0, st.bindGroup ?: gridBindGroup(st).also { st.bindGroup = it })
         pass.setVertexBuffer(0, instances)
         pass.draw(6, present.size)
-        instances.destroy()
+        instances.destroyAndRelease()
     }
 
     /** One bind group per grid: its own uniform, the shared atlas, the shared sampler. */
@@ -1418,7 +1458,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         if (st.instanceCapacity < st.instanceCount) {
             // Rounded up so filling in tile by tile doesn't reallocate on every one.
             val capacity = (st.instanceCount + 63) / 64 * 64
-            st.instances?.destroy()
+            st.instances?.destroyAndRelease()
             st.instances = device.createBuffer(
                 GPUBufferDescriptor(
                     size = capacity * INSTANCE_BYTES,
@@ -1618,7 +1658,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         val inner = rescaler.firstStepSpan(st.tileSize)
         val size = inner + 2 * rescaler.halo
         // A null here means the rescaler just gave up - fall through rather than lose the tile.
-        val source = if (use) rescaler.input(size) else null
+        val source = if (use) rescaler.input(size, atlas.format) else null
         val sourceView = rescaler.inputView
 
         if (source == null || sourceView == null) {
@@ -1645,7 +1685,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
                 rescaler.encode(encoder, size)
             },
         ) { pass, _ ->
-            rescaler.resolve(pass)
+            rescaler.resolve(pass, atlas.format)
         }
     }
 
@@ -1676,13 +1716,13 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         val centerY = st.centerYOffset * (scale / st.scale)
         val dst = ts + 2f * inset
         val filtered = filtered()
-        st.page.forEachImage { image, srcOffsetX ->
+        st.page.forEachImage { image, srcOffsetX, imageScale ->
             if (image.mipmaps.isNotEmpty()) {
-                // In raw (unscaled) pixels since solveImagePlacement scales by s itself.
-                val targetX = -tx * ts + inset + s * (srcOffsetX + image.x)
-                val targetY = centerY - ty * ts + inset + s * image.y
-                val (x, y) = solveImagePlacement(targetX, targetY, s, image, dst, dst)
-                RenderPage.render(pass, image, texture, x, y, s, filtered)
+                val si = s * imageScale
+                val targetX = -tx * ts + inset + s * srcOffsetX + si * image.x
+                val targetY = centerY - ty * ts + inset + si * image.y
+                val (x, y) = solveImagePlacement(targetX, targetY, si, image, dst, dst)
+                RenderPage.render(pass, image, texture, x, y, si, filtered)
             }
         }
     }
@@ -1704,6 +1744,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         pass: GPURenderPassEncoder, page: ImagePage.ImageSingle, dst: GPUTexture
     ): PageTiles? {
         if (page.destroyed || !page.highQuality || page.isAnimated) return null
+        // This path draws cached tiles without touching the image, so it has to report for itself.
+        page.currentImage?.let { if (it.isHdr) Hdr.noteHdrDrawn(it, it.hdrHeadroom) }
         if (!page.hasUploadedImage) return null
 
         val a = pagedAnchor(page, dst, 0f, 0f, 1f)
@@ -1763,7 +1805,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         toGenerate.forEach { tkey -> generateTileNow(st, (tkey shr 32).toInt(), tkey.toInt()) }
 
         // Only what just landed: premultiplied-over, so drawing a tile twice differs from once.
-        drawTiles(pass, st, toGenerate)
+        drawTiles(pass, dst.format, st, toGenerate)
         return true
     }
 
@@ -1884,11 +1926,18 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         val result = timing.result
         try {
             awaitPumped { result.mapAndAwait(MapMode.Read, 0, result.size) }
-        } catch (e: Throwable) {
+        } catch (e: CancellationException) {
             // Still in flight, possibly - not safe to hand back.
+            timing.resolve.destroyAndRelease()
+            result.destroyAndRelease()
+            throw e
+        } catch (e: Exception) {
+            // A lost device fails every pending map. The timing only paces tile batches, and
+            // rethrowing escaped the worker scope as an uncaught exception that killed the app.
             timing.resolve.destroy()
             result.destroy()
-            throw e
+            Log.w(TAG, "Tile timing unavailable: ${e.message}")
+            return
         }
         val timestamps = result.getConstMappedRange(0, 16)
         timestamps.order(ByteOrder.nativeOrder())
@@ -2012,6 +2061,13 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
      */
     fun cleanup() {
         workerScope.launch {
+            // Nothing to free on a lost device, and calling into its objects crashed in native code.
+            if (!WebGpuRenderer.isAvailable) {
+                pages.clear()
+                atlasOrNull = null
+                timestampPool.clear()
+                return@launch
+            }
             // On the worker with everything else it owns: a rescaler's textures can be mid-tile
             // when the view is torn down.
             upscaler.cleanup()
@@ -2020,7 +2076,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             pages.clear()
             atlasOrNull?.destroy()
             atlasOrNull = null
-            timestampPool.forEach { it.resolve.destroy(); it.result.destroy() }
+            timestampPool.forEach { it.resolve.destroyAndRelease(); it.result.destroyAndRelease() }
             timestampPool.clear()
         }
     }

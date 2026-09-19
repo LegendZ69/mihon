@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPUTexture
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
+import ca.mpreg.webgpuviewer.renderer.endAndRelease
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.getCachedTexture
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 
@@ -37,16 +38,16 @@ object TransitionBasic : Transition() {
             if (frac > 0f) {
                 page2.drawBackgroundColumns(pass, dst, 1f - frac, 0f)
                 page1.drawBackgroundColumns(pass, dst, -frac, 0f)
-                blitCached(pass, cached2, 1f - frac, 0f)
-                blitCached(pass, cached1, -frac, 0f)
+                blitCached(pass, dst.format, cached2, 1f - frac, 0f)
+                blitCached(pass, dst.format, cached1, -frac, 0f)
             } else {
                 page2.drawBackgroundColumns(pass, dst, -(frac + 1f), 0f)
                 page1.drawBackgroundColumns(pass, dst, -frac, 0f)
-                blitCached(pass, cached2, -(frac + 1f), 0f)
-                blitCached(pass, cached1, -frac, 0f)
+                blitCached(pass, dst.format, cached2, -(frac + 1f), 0f)
+                blitCached(pass, dst.format, cached1, -frac, 0f)
             }
         } finally {
-            pass.end()
+            pass.endAndRelease()
         }
     }
 
@@ -73,16 +74,16 @@ object TransitionBasic : Transition() {
                 if (frac > 0f) {
                     page1.drawBackgroundColumns(pass, dst, 0f, -frac)
                     page2.drawBackgroundColumns(pass, dst, 0f, 1f - frac)
-                    blitCached(pass, cached1, 0f, -frac)
-                    blitCached(pass, cached2, 0f, 1f - frac)
+                    blitCached(pass, dst.format, cached1, 0f, -frac)
+                    blitCached(pass, dst.format, cached2, 0f, 1f - frac)
                 } else {
                     page2.drawBackgroundColumns(pass, dst, 0f, -(frac + 1f))
                     page1.drawBackgroundColumns(pass, dst, 0f, -frac)
-                    blitCached(pass, cached2, 0f, -(frac + 1f))
-                    blitCached(pass, cached1, 0f, -frac)
+                    blitCached(pass, dst.format, cached2, 0f, -(frac + 1f))
+                    blitCached(pass, dst.format, cached1, 0f, -frac)
                 }
             } finally {
-                pass.end()
+                pass.endAndRelease()
             }
         }
     }

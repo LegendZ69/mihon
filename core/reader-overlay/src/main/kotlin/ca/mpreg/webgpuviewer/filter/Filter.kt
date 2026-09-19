@@ -2,7 +2,7 @@ package ca.mpreg.webgpuviewer.filter
 
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPUTextureView
-import androidx.webgpu.TextureFormat
+import ca.mpreg.webgpuviewer.renderer.Hdr
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 
 /**
@@ -51,12 +51,15 @@ abstract class Filter {
     open val label: String get() = javaClass.simpleName
 
     /**
-     * The format this filter writes. The chain's own textures are all
-     * [TextureFormat.RGBA8Unorm], matching the swapchain; a filter that needs headroom between
-     * its passes (compute ones usually do, since [TextureFormat.RGBA8Unorm] is storable only
-     * behind an optional feature) should say [TextureFormat.RGBA16Float] here instead.
+     * The format this filter writes. The chain's own textures all match the swapchain, which
+     * is [Hdr.frameFormat]; a filter that needs headroom between its passes should say
+     * [TextureFormat.RGBA16Float] here instead.
+     *
+     * Compute filters usually do need that, but only in SDR: [TextureFormat.RGBA8Unorm] is
+     * storable behind an optional feature, whereas [TextureFormat.RGBA16Float] - which
+     * [Hdr.frameFormat] already is while HDR is on screen - is storable as core.
      */
-    open val outputFormat: Int get() = TextureFormat.RGBA8Unorm
+    open val outputFormat: Int get() = Hdr.frameFormat
 
     /** True when [run] writes `dst` from a compute pass, so it must be a storage texture. */
     open val usesCompute: Boolean get() = false

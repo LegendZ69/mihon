@@ -126,7 +126,9 @@ fn resolve_magnify(uv: vec2<f32>) -> vec4<f32> {
         final_color_linear = catmull_rom_slow_unrolled(start_i, max_coord, wx, wy);
     }
 
-    return clamp(to_srgb_exact(final_color_linear), vec4(0.0), vec4(1.0));
+    // Colour is left unclamped: an HDR tile's is legitimately outside [0,1].
+    let srgb = to_srgb_exact(final_color_linear);
+    return vec4<f32>(srgb.rgb, clamp(srgb.a, 0.0, 1.0));
 }
 """
     }

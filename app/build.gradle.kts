@@ -39,7 +39,7 @@ android {
     defaultConfig {
         applicationId = "app.mihon"
 
-        versionCode = 29
+        versionCode = 30
         versionName = "0.20.4"
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
@@ -336,7 +336,8 @@ dependencies {
     implementation(libs.image.decoder)
 
     implementation(projects.core.readerOverlay)
-    implementation(libs.kim)
+    // Translation acquisition still needs header-only dimensions for unsupported BitmapFactory formats.
+    implementation("de.stefan-oltmann:kim:0.40.0")
 
     // UI libraries
     implementation(libs.material)

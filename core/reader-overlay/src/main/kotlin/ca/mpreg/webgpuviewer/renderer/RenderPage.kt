@@ -66,18 +66,25 @@ object RenderPage {
         ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder())
     }
 
-    /** One of the three shaders, pipeline built on first use. */
-    internal class Variant(build: () -> GPURenderPipeline) {
-        val pipeline: GPURenderPipeline by lazy(build)
+    /**
+     * One of the three shaders, with a pipeline built per target format on first use.
+     *
+     * Per format because a pipeline bakes its colour target's: the same shader draws an SDR page
+     * into an 8-bit target and an HDR page into a float one, often in the same frame.
+     */
+    internal class Variant(build: (format: Int) -> GPURenderPipeline) {
+        private val byFormat = FormatKeyed(build)
+        fun pipeline(format: Int): GPURenderPipeline = byFormat[format]
     }
 
     // Every caller of renderFast is inside ImageViewerState/ImageViewerContinuousState's own
     // render pass, which always attaches TileRenderer's stencil buffer (see [stencilViewFor]) -
     // so samplerVariant's pipeline can carry the stencil test directly, skipping a pixel
     // TileRenderer's blit already wrote (stencil == 1) instead of shading it a second time.
-    private val samplerVariant = Variant {
+    private val samplerVariant = Variant { format ->
         buildPipeline(
-            TILE_HEADER + TILE_VS_MAIN + TILE_SAMPLER_FS, depthStencil = GPUDepthStencilState(
+            TILE_HEADER + TILE_VS_MAIN + TILE_SAMPLER_FS, format,
+            depthStencil = GPUDepthStencilState(
                 format = TextureFormat.Stencil8,
                 depthWriteEnabled = OptionalBool.False,
                 depthCompare = CompareFunction.Always,
@@ -104,29 +111,31 @@ object RenderPage {
 
     internal fun filtered(magnify: String, minify: String) = Filtered(
         magnifyVariants.getOrPut(magnify) {
-            Variant { buildPipeline(HEADER + VS_MAIN + magnify + MAGNIFY_MAIN) }
+            Variant { format -> buildPipeline(HEADER + VS_MAIN + magnify + MAGNIFY_MAIN, format) }
         },
         minifyVariants.getOrPut(minify) {
-            Variant { buildPipeline(HEADER + VS_MAIN + minify + MINIFY_MAIN) }
+            Variant { format -> buildPipeline(HEADER + VS_MAIN + minify + MINIFY_MAIN, format) }
         },
     )
 
     // As samplerVariant, but stencil-free - Transition's cache-seed pass has none, and doesn't
     // need one: it fills once, then tiles blit on top in later passes via ordinary blending.
     private val samplerVariantUnmasked =
-        Variant { buildPipeline(TILE_HEADER + TILE_VS_MAIN + TILE_SAMPLER_FS) }
+        Variant { format -> buildPipeline(TILE_HEADER + TILE_VS_MAIN + TILE_SAMPLER_FS, format) }
 
     // Used by Transition's cache seed for non-highQuality pages, whose pass has no stencil
     // attachment at all - must stay stencil-free. See [plainVariantMasked] for the
     // stencil-pass-compatible twin ImageViewerState/Continuous use instead.
-    private val plainVariant = Variant { buildPipeline(TILE_HEADER + TILE_VS_MAIN + TILE_PLAIN_FS) }
+    private val plainVariant =
+        Variant { format -> buildPipeline(TILE_HEADER + TILE_VS_MAIN + TILE_PLAIN_FS, format) }
 
     // As plainVariant, but declares a no-op stencil state (always passes, never writes) purely so
     // it's valid to use within ImageViewerState/Continuous's stencil-attached pass alongside
     // samplerVariant/renderBackground's pipelines - it doesn't itself participate in masking.
-    private val plainVariantMasked = Variant {
+    private val plainVariantMasked = Variant { format ->
         buildPipeline(
-            TILE_HEADER + TILE_VS_MAIN + TILE_PLAIN_FS, depthStencil = GPUDepthStencilState(
+            TILE_HEADER + TILE_VS_MAIN + TILE_PLAIN_FS, format,
+            depthStencil = GPUDepthStencilState(
                 format = TextureFormat.Stencil8,
                 depthWriteEnabled = OptionalBool.False,
                 depthCompare = CompareFunction.Always,
@@ -136,12 +145,12 @@ object RenderPage {
 
     // Overlay tiles contain straight RGBA. Their shader premultiplies before interpolation,
     // so the blend stage must apply alpha exactly once and preserve antialiased edges.
-    private val overlayVariant = Variant {
-        buildPipeline(TILE_HEADER + TILE_VS_MAIN + TILE_OVERLAY_FS, premultiplied = true)
+    private val overlayVariant = Variant { format ->
+        buildPipeline(TILE_HEADER + TILE_VS_MAIN + TILE_OVERLAY_FS, format, premultiplied = true)
     }
 
     private fun buildPipeline(
-        code: String, depthStencil: GPUDepthStencilState? = null, premultiplied: Boolean = false
+        code: String, format: Int, depthStencil: GPUDepthStencilState? = null, premultiplied: Boolean = false
     ): GPURenderPipeline {
         val shaderModule = device.createShaderModule(
             GPUShaderModuleDescriptor(shaderSourceWGSL = GPUShaderSourceWGSL(code))
@@ -153,7 +162,7 @@ object RenderPage {
                 fragment = GPUFragmentState(
                     shaderModule, entryPoint = "fs_main", targets = arrayOf(
                         GPUColorTargetState(
-                            format = TextureFormat.RGBA8Unorm, blend = GPUBlendState(
+                            format = format, blend = GPUBlendState(
                                 color = GPUBlendComponent(
                                     srcFactor = if (premultiplied) BlendFactor.One else BlendFactor.SrcAlpha,
                                     dstFactor = BlendFactor.OneMinusSrcAlpha,
@@ -218,7 +227,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 """
 
-    private val maskedRectPipeline: GPURenderPipeline by lazy {
+    private val maskedRectPipelines = FormatKeyed { format ->
         val shaderModule = device.createShaderModule(
             GPUShaderModuleDescriptor(shaderSourceWGSL = GPUShaderSourceWGSL(MASKED_RECT_SHADER))
         )
@@ -228,7 +237,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 fragment = GPUFragmentState(
                     module = shaderModule, entryPoint = "fs_main", targets = arrayOf(
                         GPUColorTargetState(
-                            format = TextureFormat.RGBA8Unorm, blend = GPUBlendState(
+                            format = format, blend = GPUBlendState(
                                 color = GPUBlendComponent(
                                     srcFactor = BlendFactor.SrcAlpha,
                                     dstFactor = BlendFactor.OneMinusSrcAlpha,
@@ -257,7 +266,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     internal fun drawMaskedRect(
-        pass: GPURenderPassEncoder, x1: Float, y1: Float, x2: Float, y2: Float, color: Int
+        pass: GPURenderPassEncoder,
+        /** Format of [pass]'s colour attachment - see [Variant]. */
+        format: Int,
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        color: Int
     ) {
         val r = ((color shr 16) and 0xFF) / 255f
         val g = ((color shr 8) and 0xFF) / 255f
@@ -282,6 +298,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         uniformBuffer.use {
             device.queue.use { it.writeBuffer(uniformBuffer, 0, byteBuffer) }
 
+            val maskedRectPipeline = maskedRectPipelines[format]
             pass.setPipeline(maskedRectPipeline)
             maskedRectPipeline.getBindGroupLayout(0).use { layout ->
                 device.createBindGroup(
@@ -340,20 +357,21 @@ fn totalDimensions() -> vec2<u32> {
 
 // Shared by both fragment variants: the fast path also filters in linear light now, so both need
 // the same sRGB<->linear conversion.
+// Odd-symmetric as scRGB defines, so extended-sRGB negatives survive instead of being clamped.
 fn to_linear_exact(srgb: vec4<f32>) -> vec4<f32> {
-    let c = max(srgb.rgb, vec3<f32>(0.0));
+    let c = abs(srgb.rgb);
     let lower = c / vec3<f32>(12.92);
     let higher = pow((c + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
     let cond = c <= vec3<f32>(0.04045);
-    return vec4(select(higher, lower, cond), srgb.a);
+    return vec4(sign(srgb.rgb) * select(higher, lower, cond), srgb.a);
 }
 
 fn to_srgb_exact(linear_rgb: vec4<f32>) -> vec4<f32> {
-    let c = max(linear_rgb.rgb, vec3<f32>(0.0));
+    let c = abs(linear_rgb.rgb);
     let lower = c * vec3<f32>(12.92);
     let higher = vec3<f32>(1.055) * pow(c, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
     let cond = c <= vec3<f32>(0.0031308);
-    return vec4(select(higher, lower, cond), linear_rgb.a);
+    return vec4(sign(linear_rgb.rgb) * select(higher, lower, cond), linear_rgb.a);
 }
 
 fn tileLoad(i: i32, pos: vec2<i32>) -> vec4<f32> {
@@ -664,7 +682,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         device.queue.use { it.writeBuffer(image.buffer, 0, byteBuffer) }
 
-        val pipeline = variant.pipeline
+        val pipeline = variant.pipeline(dst.format)
         val entries = arrayOf(
             GPUBindGroupEntry(0, buffer = image.buffer),
         ).plus(res.quad.tileViews.mapIndexed { i, view ->
@@ -700,7 +718,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         device.queue.use { it.writeBuffer(tile.uniform, 0, byteBuffer) }
 
-        val pipeline = variant.pipeline
+        val pipeline = variant.pipeline(dst.format)
         pass.setPipeline(pipeline)
         // samplerVariant's stencil test reads against 1 - see [TileRenderer.blitPipelineStencilWrite],
         // the only thing that ever writes this attachment.
