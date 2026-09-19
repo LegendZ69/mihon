@@ -1,0 +1,163 @@
+name: Translator sync and release
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  push:
+    branches: [codex/manga-translator]
+  workflow_dispatch:
+    inputs:
+      retry_reserved:
+        description: Retry an unpublished reserved source using its original version number
+        type: boolean
+        default: false
+
+# One allocation/build/publication at a time. A later pending poll may supersede an older
+# pending poll; each run fetches current heads, so no source change depends on push chaining.
+concurrency:
+  group: translator-sync-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TRANSLATOR_RELEASE_AUTOMATION_ENABLED: ${{ vars.TRANSLATOR_RELEASE_AUTOMATION_ENABLED }}
+
+jobs:
+  synchronize:
+    if: >-
+      github.repository == 'LegendZ69/mihon' &&
+      github.ref == 'refs/heads/codex/manga-translator' &&
+      vars.TRANSLATOR_RELEASE_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      actions: read
+    outputs:
+      build: ${{ steps.reserve.outputs.build }}
+      bundle_artifact_id: ${{ steps.reserve.outputs.bundle_artifact_id }}
+      tag: ${{ steps.reserve.outputs.tag }}
+      number: ${{ steps.reserve.outputs.number }}
+      source_sha: ${{ steps.reserve.outputs.source_sha }}
+      upstream_sha: ${{ steps.reserve.outputs.upstream_sha }}
+    steps:
+      - name: Check out the translator branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/manga-translator
+          fetch-depth: 0
+      - name: Configure automation identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Verify release control tests
+        run: python3 -m unittest discover -s scripts/tests -p test_translator_release.py -v
+      - name: Synchronize, check freshness and reserve the source tag
+        id: reserve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETRY_RESERVED: ${{ inputs.retry_reserved == true && 'true' || 'false' }}
+        run: |
+          args=()
+          if [[ "$RETRY_RESERVED" == 'true' ]]; then args+=(--retry-reserved); fi
+          python3 scripts/translator_release.py sync "${args[@]}"
+
+  build:
+    needs: synchronize
+    if: needs.synchronize.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: translator-release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      BUNDLE_ARTIFACT_ID: ${{ needs.synchronize.outputs.bundle_artifact_id }}
+      RELEASE_TAG: ${{ needs.synchronize.outputs.tag }}
+      RELEASE_NUMBER: ${{ needs.synchronize.outputs.number }}
+      RELEASE_SOURCE: ${{ needs.synchronize.outputs.source_sha }}
+      MIHON_GITHUB_RELEASE: 'true'
+      TRANSLATOR_SIGNING_CERT_SHA256: ${{ vars.SIGNING_CERT_SHA256 }}
+    steps:
+      - name: Check out the immutable reserved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.synchronize.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify checkout and reservation
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SOURCE"
+      - name: Restore the original preserved publication bundle
+        if: needs.synchronize.outputs.bundle_artifact_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/translator_release.py restore-bundle \
+            --tag "$RELEASE_TAG" --artifact-id "$BUNDLE_ARTIFACT_ID" \
+            --output build/translator/public-release
+      - name: Set up JDK 21
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+      - name: Set up Gradle
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - name: Verify signing before building
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        env:
+          storeFileBase64: ${{ secrets.SIGNING_KEY }}
+          storePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias: ${{ secrets.ALIAS }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        run: python3 scripts/translator_release.py check-signing
+      - name: Format, unit tests and SQLDelight migrations
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        id: checks
+        env:
+          storeFileBase64: ${{ secrets.SIGNING_KEY }}
+          storePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias: ${{ secrets.ALIAS }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew spotlessCheck testDebugUnitTest verifySqlDelightMigration -PtranslatorReleaseNumber="$RELEASE_NUMBER"
+      - name: Build the normal minified release
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        env:
+          storeFileBase64: ${{ secrets.SIGNING_KEY }}
+          storePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias: ${{ secrets.ALIAS }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        run: >-
+          ./gradlew assembleRelease -PtranslatorReleaseNumber="$RELEASE_NUMBER"
+          -Pandroid.injected.build.abi=arm64-v8a -Pandroid.injected.testOnly=false
+      - name: Verify APK identity and package immutable public assets
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        run: |
+          python3 scripts/translator_release.py package \
+            --tag "$RELEASE_TAG" \
+            --apk app/build/intermediates/apk/release/app-arm64-v8a-release.apk \
+            --output build/translator/public-release \
+            --formatting passed --migrations passed --unit-status passed \
+            --unit-results app/build/test-results/testDebugUnitTest \
+            --unit-results domain/build/test-results/testDebugUnitTest
+      - name: Preserve the original bundle before publishing
+        if: needs.synchronize.outputs.bundle_artifact_id == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.synchronize.outputs.tag }}-${{ github.run_id }}-bundle
+          path: build/translator/public-release/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish verified assets as a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/translator_release.py publish --tag "$RELEASE_TAG" --directory build/translator/public-release
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/antsy.keystore"

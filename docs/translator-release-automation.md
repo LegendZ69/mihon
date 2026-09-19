@@ -1,0 +1,165 @@
+# Translator fork synchronization and releases
+
+This workflow is restricted to `LegendZ69/mihon`, with `codex/manga-translator` as the
+release/default branch and `main` as a fast-forward-only mirror of `mihonapp/mihon:main`.
+It performs no translation-provider or device calls. Artifacts are normal minified ARM64
+`app.mihon` releases; automated prereleases do not claim device, visual or human passage acceptance.
+
+## Enablement and preserved signing identity
+
+Keep repository variable `TRANSLATOR_RELEASE_AUTOMATION_ENABLED=false` while preparing
+and publishing the initial v15 locally. Configure the `translator-release` GitHub environment
+before enabling it. Restrict deployment branches to `codex/manga-translator`; use the
+repository's desired reviewer protection. Required environment secrets are:
+
+| Secret | Existing Gradle environment input |
+|---|---|
+| `SIGNING_KEY` | `storeFileBase64` (the existing keystore, base64 encoded) |
+| `KEY_STORE_PASSWORD` | `storePassword` |
+| `ALIAS` | `keyAlias` |
+| `KEY_PASSWORD` | `keyPassword` |
+
+Set GitHub environment variable `SIGNING_CERT_SHA256` to
+`e6c08810c0687b9471118d71f8a7ef2614d65acb6b8b94a989fbcfa4dc61d1b9`.
+This is the preserved installation certificate, not a newly generated CI key. A missing
+secret or mismatched certificate stops before Gradle; no replacement debug certificate is used.
+Do not put signing material in source, release files, CLI arguments or workflow logs.
+
+The token needs contents-write for branch/tag/release operations and issues-write in the
+sync job for a deduplicated issue #1 failure record. Signing secrets are available only in
+the protected build job. Existing branch/tag rules must allow these intended bot operations;
+the workflow does not bypass or change repository protections. Enable GitHub immutable
+releases if server-enforced asset/tag immutability is desired; the script itself never replaces
+published assets or moves reservation tags.
+
+After v15 is published and verified, set `TRANSLATOR_RELEASE_AUTOMATION_ENABLED=true`.
+All schedule, branch-push and manual-dispatch runs honor this gate. The workflow must be
+present on the default branch. In a fork, GitHub Actions and scheduled runs must also be enabled.
+
+## Synchronization, allocation and no-op behavior
+
+The schedule requests a poll every five minutes. GitHub may delay or drop scheduled runs
+under load, and may disable scheduled workflows after repository inactivity; it is not an
+exact five-minute service guarantee. Pushes to the translator branch and manual dispatches
+also run the same workflow. The complete sync/build/publish run is serialized without
+cancelling an active build. A newer pending run may replace an older pending run; each run
+fetches current refs, so it does not rely on processing every push separately.
+
+`main` advances only when it is an ancestor of current upstream. Divergence fails without
+rewriting history. Upstream changes merge normally into the translator branch. Conflicts
+abort the merge, preserve existing changes and create one issue #1 comment per source/upstream
+pair. The same unresolved pair does not produce another comment every five minutes. A human
+or local agent must resolve and push conflicts; CI does not use AI to resolve source code.
+
+Versions begin at 15. The next reservation is one greater than every existing translator
+reservation, including failed releases. `translator-vN` is an annotated tag whose JSON
+annotation records `schema`, `number`, `source_sha` and `upstream_sha`. The tag points to the
+exact compile/source-archive commit. `-PtranslatorReleaseNumber=N` supplies versionCode
+`100000 + N` and versionName `<upstream version>-translator.N`.
+
+Reserved numbers and tags are never reused for different inputs. An unchanged published
+source is a no-op. Fork-only changes limited to `docs/**` or Markdown files also reuse the
+latest reservation when upstream is unchanged; this lets a final validation report commit
+follow publication without allocating another version. All other source, script, build and
+workflow changes trigger a new reservation. A new upstream SHA triggers a new build even
+when upstream changed documentation only. Explicit retries use the original reserved source. A rollback after a newer reservation receives a
+new version even if its file tree matches an older published release.
+
+Source and upstream heads are checked immediately before reservation and again before
+publication. A substantive advance defers publication to a later synchronized run. Equivalent
+fork documentation changes remain allowed. Assets, manifests and tags continue identifying
+the original compile commit; no artifact is described as built from the later documentation commit.
+
+The build job is an explicit dependency in the same workflow. It does not expect the
+`GITHUB_TOKEN` branch/tag push to trigger another workflow. This avoids GitHub's normal
+suppression of most events generated by that token.
+
+## Local initial release and recovery
+
+Run from a clean tracked checkout containing the final source and release tooling. The sync
+command is restricted to disposable GitHub Actions checkouts; local publication uses these
+separate commands. Keep automation disabled while reserving the first version.
+
+```sh
+python3 scripts/translator_release.py reserve --source HEAD --upstream <verified-upstream-sha> --number 15
+# Review the reservation, then explicitly push this immutable tag:
+git push origin refs/tags/translator-v15:refs/tags/translator-v15
+./gradlew assembleRelease -PtranslatorReleaseNumber=15 -Pandroid.injected.build.abi=arm64-v8a -Pandroid.injected.testOnly=false
+python3 scripts/translator_release.py package \
+  --tag translator-v15 \
+  --apk app/build/intermediates/apk/release/app-arm64-v8a-release.apk \
+  --output build/translator/public-release-v15 \
+  --formatting passed --migrations passed --unit-status passed \
+  --unit-results app/build/test-results/testDebugUnitTest \
+  --unit-results domain/build/test-results/testDebugUnitTest
+python3 scripts/translator_release.py publish \
+  --tag translator-v15 --directory build/translator/public-release-v15
+```
+
+Replace the example check statuses with the observed outcomes. Defaults are `not_run`;
+missing JUnit reports remain unavailable, not zero tests. `package` verifies the real APK
+using `apksigner`, `aapt` and `zipalign -c -P 16 -v 4`; set `ANDROID_HOME` or pass `--apksigner`, `--aapt` and `--zipalign` paths.
+The package name, version code/name, ARM64-only native ABI and exact certificate must match.
+The 16 KB ZIP alignment check is separate from native ELF/runtime acceptance.
+Local signing still uses the existing local keystore configuration. `package` refuses a
+modified tracked checkout or a checkout different from its reserved commit.
+
+For a local release with observed focused device tests, optionally add
+`--device-results <private-receipt.json>`. The receipt must contain exactly `schema: 1`,
+`source_sha`, `apk_sha256` and `runs`. Each run contains only `kind` (`k90` or `emulator16k`),
+`page_size_bytes` (4096 or 16384), `status` (`passed`, `failed`, `not_run`), numeric `tests`,
+`failures`, `errors`, `skipped`, and `recorded_at` in `YYYY-MM-DDTHH:MM:SSZ` format.
+Hashes must match this reservation and APK. `emulator16k` requires an observed 16384-byte
+runtime. Unknown fields/free-form logs are rejected. The manifest records these focused
+results while overall acceptance remains pending; the receipt cannot approve human meaning.
+
+If building fails, the reservation remains and normal polling does not repeatedly rebuild
+it. Dispatch with `retry_reserved=true` to retry an unpublished reservation. A published
+release always remains a no-op. On an explicit retry, the workflow first looks for the original preserved Actions bundle. If one
+exists, it validates the artifact digest, trusted workflow run, source identity and all checksums,
+then resumes publication without signing, rebuilding or repackaging. Matching uploaded assets
+are skipped; only missing assets are uploaded. The earliest bundle is authoritative, including
+when an expired bundle makes recovery unavailable. A draft with assets but no preserved bundle
+fails closed. For a locally preserved bundle, `publish` resumes the same exact bytes directly.
+CI preserves the original bundle before publication for 90 days. An expired/missing original
+bundle with prior assets requires a new reviewed source/version, not moving the old tag.
+
+## Artifacts and validation boundaries
+
+Each release includes:
+
+- `mihon-translator-vN-arm64-v8a.apk`.
+- `mihon-translator-vN-source.zip`, from `git archive` of the exact reserved source, with all
+  tracked files; untracked/ignored local files and credentials are not added.
+- `manifest.json`, recording source/upstream, version, certificate, ABI, asset hashes/sizes
+  and the workflow run URL where available.
+- `validation.json`, aggregate formatting, migration and supplied JUnit counts, explicitly
+  marking device/live-provider/human validation not run by this workflow.
+- `SHA256SUMS`, covering the APK, source ZIP, manifest and validation summary.
+
+Raw failure messages, test names, logs, API captures, environment values and signing material
+are excluded from the generated validation summary. Historical handset evidence remains in
+its existing reports with its original artifact scope. CI runs formatting, host unit tests,
+SQLDelight migration verification and the normal minified release build. Those checks must
+pass for automatic publication; successful host checks do not imply handset acceptance.
+
+The local release-control tests use temporary Git repositories and synthetic artifacts:
+
+```sh
+python3 -m unittest discover -s scripts/tests -p test_translator_release.py -v
+```
+
+They cover version reservation/retry, source binding, fast-forward-only mirrors, preserved
+merge conflicts, docs-only deduplication, APK metadata/certificate/ABI validation, secret-free
+aggregate reports, source-archive ownership, artifact checksums and immutable upload retries.
+They make no remote writes, Gradle calls, device calls or provider requests.
+
+## Official behavior references
+
+Verified 2026-09-20:
+
+- [Scheduled events and default-branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+- [Events generated by GITHUB_TOKEN](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+- [Workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+- [Deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+- [Immutable releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#immutable-releases).

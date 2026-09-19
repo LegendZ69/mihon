@@ -29,6 +29,11 @@ if (Config.includeTelemetry) {
 }
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
+val translatorReleaseNumber = providers.gradleProperty("translatorReleaseNumber").orNull?.let { value ->
+    requireNotNull(value.toIntOrNull()?.takeIf { it in 15..2_099_900_000 }) {
+        "translatorReleaseNumber must be an integer from 15 to 2099900000"
+    }
+}
 
 android {
     namespace = "eu.kanade.tachiyomi"
@@ -39,8 +44,8 @@ android {
     defaultConfig {
         applicationId = "app.mihon"
 
-        versionCode = 30
-        versionName = "0.20.4"
+        versionCode = translatorReleaseNumber?.let { 100_000 + it } ?: 30
+        versionName = "0.20.4" + translatorReleaseNumber?.let { "-translator.$it" }.orEmpty()
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
