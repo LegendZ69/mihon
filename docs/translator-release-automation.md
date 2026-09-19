@@ -5,6 +5,10 @@ release/default branch and `main` as a fast-forward-only mirror of `mihonapp/mih
 It performs no translation-provider or device calls. Artifacts are normal minified ARM64
 `app.mihon` releases; automated prereleases do not claim device, visual or human passage acceptance.
 
+Current acceptance uses agent visual and passage review; a separate human signoff is not
+required. Reports must identify the reviewer and observed scope. Automated host builds do
+not perform that review and must never label agent-reviewed output as human-approved.
+
 ## Enablement and preserved signing identity
 
 Keep repository variable `TRANSLATOR_RELEASE_AUTOMATION_ENABLED=false` while preparing
@@ -32,6 +36,20 @@ the workflow does not bypass or change repository protections. Enable GitHub imm
 releases if server-enforced asset/tag immutability is desired; the script itself never replaces
 published assets or moves reservation tags.
 
+The synchronization checkout accepts an optional repository secret `TRANSLATOR_SYNC_TOKEN`
+for Git pushes that include `.github/workflows/` changes. Use a dedicated credential scoped
+to this repository with **Contents: write** and **Workflows: write**; a classic PAT for this
+public fork instead needs `public_repo` and `workflow` scopes (`repo` for private repositories).
+Do not copy a personal workstation OAuth session into
+Actions. The default `GITHUB_TOKEN` remains the fallback for ordinary source changes and
+continues to handle issue/release APIs. The dedicated token is used only by the synchronization
+checkout, never by the signing/build job. A missing, expired or insufficient credential stops
+the relevant push and reports a fixed diagnostic; it does not alter branch protection.
+
+A dedicated token can trigger another push workflow. The existing concurrency group serializes
+it; after the current run reserves/publishes the source, the later unchanged-source run is a
+no-op. The synchronization/build dependency remains explicit and never relies on that event.
+
 After v15 is published and verified, set `TRANSLATOR_RELEASE_AUTOMATION_ENABLED=true`.
 All schedule, branch-push and manual-dispatch runs honor this gate. The workflow must be
 present on the default branch. In a fork, GitHub Actions and scheduled runs must also be enabled.
@@ -47,15 +65,37 @@ fetches current refs, so it does not rely on processing every push separately.
 
 `main` advances only when it is an ancestor of current upstream. Divergence fails without
 rewriting history. Upstream changes merge normally into the translator branch. Conflicts
-abort the merge, preserve existing changes and create one issue #1 comment per source/upstream
-pair. The same unresolved pair does not produce another comment every five minutes. A human
-or local agent must resolve and push conflicts; CI does not use AI to resolve source code.
+abort the merge and preserve existing changes. Push rejections, mirror divergence and confirmed
+merge conflicts have separate sanitized diagnostics. Logs and issue #1 comments identify the
+failed stage and a fixed cause code without exposing remote stderr, credentials or URLs. One
+comment is retained per source/upstream/stage/cause combination; repeated polling deduplicates
+it. A local agent resolves content conflicts; CI does not use AI to resolve source code.
+
+Check the reported cause before acting: `workflow_permission` requires an appropriately scoped
+sync credential, `protected_ref` requires review of the existing repository rule,
+`non_fast_forward` requires fetching/reconciling current refs, and `transport` or `unknown`
+requires checking remote state before retrying. Earlier successful steps can already have
+advanced a branch. An uncertain reservation push must be reconciled against the remote tag;
+never reuse its number for different source inputs. Failure to post the issue comment does
+not hide the original synchronization error.
+
+The historical scheduled run [35469317788](https://github.com/LegendZ69/mihon/actions/runs/35469317788)
+stopped at `git push failed (exit 1)` while upstream introduced workflow updates. Its old
+script discarded the server diagnostic; its generic issue comment is not proof of a content
+conflict or a permission rejection. The later read-only inspection found no repository
+rulesets and unprotected main/translator branches. The new local regression reproduces an
+explicit workflow-permission rejection through a real Git receive hook and verifies the
+stage/cause, credential redaction and unchanged remote ref. This establishes diagnostic
+behavior, not the unrecoverable cause of the historical hosted run.
 
 Versions begin at 15. The next reservation is one greater than every existing translator
 reservation, including failed releases. `translator-vN` is an annotated tag whose JSON
 annotation records `schema`, `number`, `source_sha` and `upstream_sha`. The tag points to the
 exact compile/source-archive commit. `-PtranslatorReleaseNumber=N` supplies versionCode
 `100000 + N` and versionName `<upstream version>-translator.N`.
+Numbered production `release` builds also enable the fork's in-app updater automatically.
+The existing `-PtranslatorReleaseNumber=N` argument is sufficient; no extra CI flag is
+needed. Benchmark, debug, nightly and FOSS variants retain their separate updater policy.
 
 Reserved numbers and tags are never reused for different inputs. An unchanged published
 source is a no-op. Fork-only changes limited to `docs/**` or Markdown files also reuse the
@@ -126,7 +166,7 @@ methods provide companion coverage. Release notes and the manifest identify this
 explicitly, alongside the instrumentation hash, without attributing companion methods to
 the main package. `emulator16k` requires an observed 16384-byte runtime. Unknown fields,
 missing identities and free-form logs are rejected. Overall acceptance remains pending;
-the receipt cannot approve human meaning.
+the receipt does not perform agent visual or passage review.
 
 If building fails, the reservation remains and normal polling does not repeatedly rebuild
 it. Dispatch with `retry_reserved=true` to retry an unpublished reservation. A published
@@ -188,3 +228,6 @@ Verified 2026-09-20:
 - [Workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 - [Deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
 - [Immutable releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#immutable-releases).
+- [Additional workflow authentication permissions](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token#granting-additional-permissions).
+- [Workflow scope](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps#available-scopes).
+- [Fine-grained permissions for Git references](https://docs.github.com/en/rest/git/refs#update-a-reference).

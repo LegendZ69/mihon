@@ -71,6 +71,35 @@ class TranslationUsageLifecycleTest {
     }
 
     @Test
+    fun `missing provider usage retains the exchange rate recorded with its reservation`() = runBlocking {
+        val records = linkedMapOf<String, TranslationUsageRecord>()
+        val repository = repository(records)
+        var reservation: TranslationUsageRecord? = null
+        coEvery { repository.usage(any()) } coAnswers {
+            records[firstArg<String>()]?.copy(
+                exchangeRate = "1.267857142858",
+                exchangeRateSource = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
+            ).also { reservation = it }
+        }
+
+        gateway(repository, "").translate(request())
+
+        val before = requireNotNull(reservation)
+        val after = records.values.single()
+        assertTrue(after.outcomeUncertain)
+        assertNotNull(before.reservedAmount)
+        assertEquals(before.id, after.id)
+        assertEquals(before.time, after.time)
+        assertEquals(before.reservedAmount, after.reservedAmount)
+        assertEquals(before.reservedCurrency, after.reservedCurrency)
+        assertEquals(before.pricingSource, after.pricingSource)
+        assertEquals(before.pricingVerifiedAt, after.pricingVerifiedAt)
+        assertEquals(before.exchangeRate, after.exchangeRate)
+        assertEquals(before.exchangeRateSource, after.exchangeRateSource)
+        assertNull(after.estimatedUsd)
+    }
+
+    @Test
     fun `failed operation persistence still removes the temporary unsanitized response`() {
         val repository = mockk<TranslationRepository>(relaxed = true)
         coEvery { repository.saveOperation(any()) } coAnswers {

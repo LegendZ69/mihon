@@ -323,14 +323,15 @@ class MainActivity : BaseActivity() {
         LaunchedEffect(Unit) {
             if (updaterEnabled) {
                 try {
+                    context.appGraph.appUpdateManager.reconcileInstalledVersion()
+                    if (intent.action ==
+                        eu.kanade.tachiyomi.data.updater.AppUpdateManager.OPEN_DOWNLOAD
+                    ) {
+                        return@LaunchedEffect
+                    }
                     val result = context.appGraph.updateChecker.checkForUpdate()
                     if (result is GetApplicationRelease.Result.NewUpdate) {
-                        val updateScreen = NewUpdateScreen(
-                            versionName = result.release.version,
-                            changelogInfo = result.release.info,
-                            releaseLink = result.release.releaseLink,
-                            downloadLink = result.release.downloadLink,
-                        )
+                        val updateScreen = NewUpdateScreen(result.release)
                         navigator.push(updateScreen)
                     }
                 } catch (e: Exception) {
@@ -535,6 +536,13 @@ class MainActivity : BaseActivity() {
         }
 
         val tabToOpen = when (intent.action) {
+            eu.kanade.tachiyomi.data.updater.AppUpdateManager.OPEN_DOWNLOAD -> {
+                appGraph.appUpdateManager.state.value?.let { download ->
+                    navigator.popUntilRoot()
+                    navigator.push(NewUpdateScreen(download.release))
+                }
+                null
+            }
             Constants.SHORTCUT_LIBRARY -> HomeScreen.Tab.Library()
             Constants.SHORTCUT_MANGA -> {
                 val idToOpen = intent.extras?.getLong(Constants.MANGA_EXTRA) ?: return false

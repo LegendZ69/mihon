@@ -32,6 +32,63 @@ class ReleaseError(RuntimeError):
     pass
 
 
+SYNC_STAGES = {
+    "synchronization": "synchronization",
+    "main_mirror": "main mirror push",
+    "upstream_merge": "upstream merge",
+    "translator_push": "translator branch push",
+    "reservation_push": "reservation tag push",
+}
+SYNC_REASONS = {
+    "workflow_permission": "The server rejected workflow-file updates. Configure a dedicated repository-scoped sync credential with Contents and Workflows write access.",
+    "protected_ref": "The server rejected a protected reference or repository rule. Review the applicable rule; do not bypass it or force-push.",
+    "non_fast_forward": "The remote reference advanced or already exists. Fetch and reconcile the current references without overwriting history or tags.",
+    "authentication": "Git authentication was rejected. Check the configured sync credential and its expiry.",
+    "permission_denied": "The server denied repository write access. Check the configured sync credential's repository access.",
+    "transport": "The Git connection failed. Verify the remote reference before retrying because the server may have accepted the push.",
+    "mirror_diverged": "The main mirror has diverged from upstream. Reconcile the histories without force-pushing.",
+    "merge_conflict": "The upstream merge has content conflicts. Resolve them locally while preserving translator changes.",
+    "merge_failed": "The upstream merge failed without confirmed content conflicts. Inspect the merge setup before retrying.",
+    "unknown": "The cause is unclassified. Inspect authentication, repository rules, connectivity and current remote references before retrying; a content conflict has not been established.",
+}
+
+
+class SyncFailure(ReleaseError):
+    """Only fixed diagnostic codes/text may leave a captured Git command."""
+
+    def __init__(self, stage: str, reason: str, exit_code: int | None = None):
+        if stage not in SYNC_STAGES or reason not in SYNC_REASONS:
+            raise ValueError("Invalid synchronization diagnostic")
+        if exit_code is not None and type(exit_code) is not int:
+            raise ValueError("Invalid synchronization exit code")
+        self.stage, self.reason, self.exit_code = stage, reason, exit_code
+        status = f", exit {exit_code}" if exit_code is not None else ""
+        super().__init__(f"{SYNC_STAGES[stage]} failed [{reason}{status}]. {SYNC_REASONS[reason]}")
+
+
+def push_sync_ref(repo: Path, refspec: str, stage: str) -> None:
+    result = command(repo, "git", "push", "origin", refspec, check=False)
+    if not result.returncode:
+        return
+    # Match known server/Git diagnostics, but never publish their bodies, URLs or credentials.
+    output = (result.stdout + "\n" + result.stderr).lower()
+    if "workflow" in output and ("refusing to allow" in output or "workflow scope" in output or "workflows permission" in output):
+        reason = "workflow_permission"
+    elif any(value in output for value in ("gh006", "gh013", "protected branch", "repository rule violations")):
+        reason = "protected_ref"
+    elif "non-fast-forward" in output or ("[rejected]" in output and any(value in output for value in ("fetch first", "already exists"))):
+        reason = "non_fast_forward"
+    elif any(value in output for value in ("authentication failed", "invalid username or token", "could not read username", "permission denied (publickey)")):
+        reason = "authentication"
+    elif "write access to repository not granted" in output or re.search(r"permission to .+ denied", output):
+        reason = "permission_denied"
+    elif any(value in output for value in ("could not resolve host", "failed to connect", "connection timed out", "connection reset")):
+        reason = "transport"
+    else:
+        reason = "unknown"
+    raise SyncFailure(stage, reason, result.returncode)
+
+
 def command(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     # Output is returned to callers, never dumped with environment values or raw HTTP bodies.
     result = subprocess.run(args, cwd=repo, text=True, capture_output=True)
@@ -134,8 +191,10 @@ def merge_upstream(repo: Path, branch: str, upstream: str) -> str:
     git(repo, "checkout", branch)
     result = command(repo, "git", "merge", "--no-edit", upstream_sha, check=False)
     if result.returncode:
+        unmerged = command(repo, "git", "diff", "--name-only", "--diff-filter=U", check=False)
         command(repo, "git", "merge", "--abort", check=False)
-        raise ReleaseError("Upstream merge failed or has conflicts; translator history was not overwritten")
+        reason = "merge_conflict" if not unmerged.returncode and unmerged.stdout.strip() else "merge_failed"
+        raise SyncFailure("upstream_merge", reason, result.returncode)
     return commit_sha(repo, "HEAD")
 
 
@@ -248,8 +307,8 @@ def mirror_main(repo: Path, upstream: str) -> None:
     if previous == upstream_sha:
         return
     if command(repo, "git", "merge-base", "--is-ancestor", previous, upstream_sha, check=False).returncode:
-        raise ReleaseError("main has diverged from upstream; automatic synchronization cannot rewrite either history")
-    git(repo, "push", "origin", f"{upstream_sha}:refs/heads/main")
+        raise SyncFailure("main_mirror", "mirror_diverged")
+    push_sync_ref(repo, f"{upstream_sha}:refs/heads/main", "main_mirror")
 
 
 def sync_and_reserve(repo: Path, retry_reserved: bool = False) -> tuple[Reservation, bool]:
@@ -273,25 +332,33 @@ def sync_and_reserve(repo: Path, retry_reserved: bool = False) -> tuple[Reservat
     source_before = commit_sha(repo, f"refs/remotes/origin/{RELEASE_BRANCH}")
     try:
         mirror_main(repo, upstream_sha)
-    except ReleaseError:
-        record_blocked_sync(repo, source_before, upstream_sha)
+    except ReleaseError as error:
+        report_sync_failure(repo, source_before, upstream_sha, error, "main_mirror")
         raise
     if git(repo, "status", "--porcelain", "--untracked-files=no"):
         raise ReleaseError("Refusing to replace a dirty checkout")
     git(repo, "checkout", "-B", RELEASE_BRANCH, f"refs/remotes/origin/{RELEASE_BRANCH}")
     try:
         source = merge_upstream(repo, RELEASE_BRANCH, upstream_sha)
-    except ReleaseError:
-        record_blocked_sync(repo, source_before, upstream_sha)
+    except ReleaseError as error:
+        report_sync_failure(repo, source_before, upstream_sha, error, "upstream_merge")
         raise
-    git(repo, "push", "origin", f"HEAD:refs/heads/{RELEASE_BRANCH}")
+    try:
+        push_sync_ref(repo, f"HEAD:refs/heads/{RELEASE_BRANCH}", "translator_push")
+    except SyncFailure as error:
+        report_sync_failure(repo, source_before, upstream_sha, error, "translator_push")
+        raise
     if not remote_heads_current(repo, source, upstream_sha):
         raise ReleaseError("Source or upstream advanced during synchronization; the next run will resynchronize")
     existing = equivalent_reservation(repo, source, upstream_sha)
     record = existing or reserve_local(repo, source, upstream_sha)
     if existing is None:
         # No force: a race is a hard failure, never a reused version or moved source tag.
-        git(repo, "push", "origin", f"refs/tags/{record.tag}:refs/tags/{record.tag}")
+        try:
+            push_sync_ref(repo, f"refs/tags/{record.tag}:refs/tags/{record.tag}", "reservation_push")
+        except SyncFailure as error:
+            report_sync_failure(repo, source_before, upstream_sha, error, "reservation_push")
+            raise
     remote_release = release_metadata(repo, record.tag)
     published = remote_release is not None and not remote_release.get("draft", False)
     return record, build_needed(existing, published, retry_reserved)
@@ -370,7 +437,9 @@ def validation_summary(reports: list[Path], formatting: str, migrations: str, un
                        "totals": totals if totals["reports"] else None},
         "device_validation": {"status": "not_run", "reason": "No device validation is performed by this release workflow"},
         "live_providers": {"status": "not_run", "reason": "No provider calls are made during release automation"},
-        "human_passage_approval": {"status": "not_run"},
+        "passage_review": {"status": "not_run", "reviewer": "agent",
+                           "reason": "Visual and passage review is not performed by release automation"},
+        "human_passage_approval": {"status": "not_run", "required": False},
         "disclosure": "Aggregate results only. Raw logs, test names, payloads and credentials are excluded.",
     }
 
@@ -484,26 +553,41 @@ def check_signing_environment(repo: Path) -> None:
         raise ReleaseError("Imported signing key does not match the preserved installation certificate")
 
 
-def blocked_sync_marker(source: str, upstream: str) -> str:
+def blocked_sync_marker(source: str, upstream: str, failure: SyncFailure | None = None) -> str:
     if not SHA.fullmatch(source) or not SHA.fullmatch(upstream):
         raise ReleaseError("Invalid blocked-sync identity")
-    key = hashlib.sha256(f"{source}\n{upstream}".encode()).hexdigest()
-    return f"<!-- translator-sync-blocked:v1:{key} -->"
+    failure = failure or SyncFailure("synchronization", "unknown")
+    key = hashlib.sha256(f"{source}\n{upstream}\n{failure.stage}\n{failure.reason}".encode()).hexdigest()
+    return f"<!-- translator-sync-blocked:v2:{key} -->"
 
 
-def record_blocked_sync(repo: Path, source: str, upstream: str) -> None:
-    """Record one actionable issue comment per exact pair, never every polling interval."""
-    marker = blocked_sync_marker(source, upstream)
+def report_sync_failure(repo: Path, source: str, upstream: str, error: ReleaseError, stage: str) -> None:
+    failure = error if isinstance(error, SyncFailure) else SyncFailure(stage, "unknown")
+    try:
+        record_blocked_sync(repo, source, upstream, failure)
+    except (ReleaseError, ValueError, TypeError, KeyError):
+        # Retain the original cause even if GitHub issue reporting is unavailable.
+        print("Could not record the synchronization diagnostic on issue #1; the original failure remains authoritative.", file=sys.stderr)
+
+
+def record_blocked_sync(repo: Path, source: str, upstream: str, failure: SyncFailure | None = None) -> None:
+    """Record one actionable issue comment per source/upstream/stage/cause combination."""
+    failure = failure or SyncFailure("synchronization", "unknown")
+    marker = blocked_sync_marker(source, upstream, failure)
     result = gh(repo, "api", "--paginate", "--slurp", f"repos/{REPOSITORY}/issues/1/comments?per_page=100")
     if len(result.stdout) > 16 * 1024 * 1024:
         raise ReleaseError("Issue history exceeds deduplication limit; no duplicate comment was posted")
     pages = json.loads(result.stdout)
+    if (not isinstance(pages, list) or any(not isinstance(page, list) for page in pages) or
+            any(not isinstance(comment, dict) for page in pages for comment in page)):
+        raise ReleaseError("GitHub returned invalid issue comment pagination")
     if any(marker in str(comment.get("body", "")) for page in pages for comment in page):
         return
-    body = (f"{marker}\nTranslator upstream synchronization is blocked for source `{source}` and upstream "
-            f"`{upstream}`. The automatic merge/fast-forward failed; neither history was rewritten. "
-            "Resolve the upstream conflict on the translator branch (or restore a fast-forwardable main mirror), "
-            "then push the reviewed resolution. No release was allocated for this failed synchronization.")
+    reservation = ("A local reservation exists; verify the remote tag before retrying. Never reuse its number for different inputs."
+                   if failure.stage == "reservation_push" else "No release was allocated for this failed synchronization.")
+    body = (f"{marker}\nTranslator upstream synchronization stopped for source `{source}` and upstream "
+            f"`{upstream}`. {failure} No force-push was attempted. Earlier successful synchronization steps "
+            f"may already have advanced remote branches. {reservation}")
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as payload:
         json.dump({"body": body}, payload)
         payload.flush()
@@ -686,7 +770,7 @@ def release_description(record: Reservation, validation: dict) -> tuple[str, str
     observed_device = any(run.get("status") in {"passed", "failed"} for run in runs)
     label = "Partially tested" if observed_host or observed_device else "Untested"
     title = f"Mihon Translator v{record.number} — {label}"
-    lines = [f"**{label}. Overall acceptance and human passage approval remain pending.**",
+    lines = [f"**{label}. Overall acceptance remains pending.**",
              f"Normal minified ARM64 release from `{record.source_sha}` containing upstream `{record.upstream_sha}`.",
              f"Version code: {record.version_code}. Signed with the preserved installation certificate."]
     for key, name in (("formatting", "Formatting"), ("sqldelight_migrations", "SQLDelight migrations"),
@@ -705,9 +789,11 @@ def release_description(record: Reservation, validation: dict) -> tuple[str, str
                          f"{run['errors']} errors, {run['skipped']} skipped; kernel page size {run['page_size_bytes']} bytes. "
                          f"Tested package: `{run['tested_package']}`. Tested APK SHA-256: `{run['tested_apk_sha256']}`. "
                          f"Instrumentation APK SHA-256: `{run['instrumentation_apk_sha256']}`.")
-        lines.append("These focused results do not establish full visual, performance or human meaning acceptance.")
+        lines.append("These focused results do not establish full visual, performance or passage acceptance.")
     else:
         lines.append("No hash-bound device test results are recorded for this artifact.")
+    lines.append("Separate agent visual and passage review is not performed by this workflow. "
+                 "Human passage approval is not required; agent review must be identified as agent review.")
     lines.append("See validation.json for the recorded scope and manifest.json/SHA256SUMS for source and artifact identities. "
                  "Release tooling makes no translation-provider requests; historical provider validation has its own scope.")
     return title, "\n\n".join(lines)

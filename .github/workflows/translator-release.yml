@@ -49,6 +49,9 @@ jobs:
         with:
           ref: codex/manga-translator
           fetch-depth: 0
+          # Workflow changes need a repository-scoped credential with Workflows write access.
+          # Keep this separate from signing credentials and the token used by release APIs.
+          token: ${{ secrets.TRANSLATOR_SYNC_TOKEN || github.token }}
       - name: Configure automation identity
         run: |
           git config user.name 'github-actions[bot]'

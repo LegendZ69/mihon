@@ -34,6 +34,11 @@ fun NewUpdateScreen(
     onOpenInBrowser: () -> Unit,
     onAcceptUpdate: () -> Unit,
     onRejectUpdate: () -> Unit,
+    isPrerelease: Boolean = false,
+    error: String? = null,
+    installPermissionRequired: Boolean = false,
+    canCancelDownload: Boolean = false,
+    onCancelDownload: () -> Unit = {},
 ) {
     InfoScreen(
         icon = MaterialSymbols.Rounded.NewReleases,
@@ -41,15 +46,25 @@ fun NewUpdateScreen(
         subtitleText = versionName,
         acceptText = when (stage) {
             NewUpdateScreenModel.Stage.Available -> stringResource(MR.strings.update_check_confirm)
+            NewUpdateScreenModel.Stage.Queued -> stringResource(MR.strings.update_download_queued)
+            NewUpdateScreenModel.Stage.Verifying -> stringResource(MR.strings.update_download_verifying)
             NewUpdateScreenModel.Stage.Downloading -> stringResource(
                 MR.strings.downloading_with_progress,
                 downloadProgress(),
             )
-            NewUpdateScreenModel.Stage.Downloaded -> stringResource(MR.strings.action_install)
+            NewUpdateScreenModel.Stage.Downloaded -> stringResource(
+                if (installPermissionRequired) MR.strings.update_install_permission else MR.strings.action_install,
+            )
             NewUpdateScreenModel.Stage.Failed -> stringResource(MR.strings.action_retry)
         },
         onAcceptClick = onAcceptUpdate,
-        canAccept = stage != NewUpdateScreenModel.Stage.Downloading,
+        canAccept =
+        stage in
+            setOf(
+                NewUpdateScreenModel.Stage.Available,
+                NewUpdateScreenModel.Stage.Failed,
+                NewUpdateScreenModel.Stage.Downloaded,
+            ),
         rejectText = stringResource(MR.strings.action_not_now),
         onRejectClick = onRejectUpdate,
     ) {
@@ -58,6 +73,22 @@ fun NewUpdateScreen(
                 .fillMaxWidth()
                 .padding(vertical = MaterialTheme.padding.large),
         ) {
+            if (isPrerelease) {
+                Text(
+                    text = stringResource(MR.strings.update_prerelease_notice),
+                    modifier = Modifier.padding(bottom = MaterialTheme.padding.small),
+                )
+            }
+            if (error != null) {
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = MaterialTheme.padding.small),
+                )
+            }
+            if (canCancelDownload) {
+                TextButton(onClick = onCancelDownload) { Text(stringResource(MR.strings.action_cancel)) }
+            }
             MarkdownRender(
                 content = changelogInfo,
                 flavour = remember { GFMFlavourDescriptor() },

@@ -986,6 +986,11 @@
 
     <!--UpdateCheck-->
     <string name="update_check_confirm">Download</string>
+    <string name="update_download_queued">Waiting for download…</string>
+    <string name="update_download_verifying">Verifying update…</string>
+    <string name="update_install_permission">Allow installation</string>
+    <string name="update_prerelease_notice">Prerelease · Partially tested. See the release notes for completed checks and remaining limitations.</string>
+    <string name="update_download_status">Update download</string>
     <string name="update_check_open">Open on GitHub</string>
     <!-- reserved for future use -->
     <string name="update_check_eol">This Android version is no longer supported</string>

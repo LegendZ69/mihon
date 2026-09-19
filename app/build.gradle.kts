@@ -51,7 +51,8 @@ android {
         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
         buildConfigField("String", "BUILD_TIME", "\"${getBuildTime(useLatestCommitTime = false)}\"")
         buildConfigField("boolean", "TELEMETRY_INCLUDED", "${Config.includeTelemetry}")
-        buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater}")
+        buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater && translatorReleaseNumber == null}")
+        buildConfigField("int", "TRANSLATOR_RELEASE_NUMBER", "${translatorReleaseNumber ?: 0}")
         buildConfigField("boolean", "TRANSLATION_LOCAL_FIXTURES_ENABLED", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -91,6 +92,7 @@ android {
             isPseudoLocalesEnabled = true
         }
         val release = getByName("release") {
+            buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater || translatorReleaseNumber != null}")
             isMinifyEnabled = true
             isShrinkResources = true
 
@@ -107,6 +109,7 @@ android {
 
         create("foss") {
             initWith(release)
+            buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater && translatorReleaseNumber == null}")
 
             applicationIdSuffix = ".foss"
 
@@ -114,6 +117,7 @@ android {
         }
         create("nightly") {
             initWith(release)
+            buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater && translatorReleaseNumber == null}")
 
             applicationIdSuffix = ".debug"
 
@@ -125,6 +129,7 @@ android {
         }
         create("benchmark") {
             initWith(release)
+            buildConfigField("boolean", "UPDATER_ENABLED", "false")
 
             buildConfigField("boolean", "TRANSLATION_LOCAL_FIXTURES_ENABLED", "true")
 

@@ -114,6 +114,7 @@ interface AppGraph : ViewModelGraph {
     val downloadManager: DownloadManager
 
     val updateChecker: AppUpdateChecker
+    val appUpdateManager: eu.kanade.tachiyomi.data.updater.AppUpdateManager
 
     val trustExtension: TrustExtension
 

@@ -1,7 +1,5 @@
 package eu.kanade.tachiyomi.ui.more
 
-import android.content.Context
-import android.content.Intent
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,108 +10,93 @@ import dev.zacsweers.metro.AssistedInject
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactoryKey
-import eu.kanade.tachiyomi.extension.util.ExtensionInstaller
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.NetworkHelper
-import eu.kanade.tachiyomi.network.ProgressListener
-import eu.kanade.tachiyomi.network.awaitSuccess
-import eu.kanade.tachiyomi.network.newCachelessCallWithProgress
-import eu.kanade.tachiyomi.util.storage.getUriCompat
-import eu.kanade.tachiyomi.util.storage.saveTo
+import eu.kanade.tachiyomi.data.updater.AppUpdateManager
+import eu.kanade.tachiyomi.data.updater.AppUpdateStage
+import eu.kanade.tachiyomi.data.updater.isSameUpdate
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import logcat.LogPriority
-import tachiyomi.core.common.util.lang.withIOContext
-import tachiyomi.core.common.util.system.logcat
+import kotlinx.serialization.json.Json
+import tachiyomi.domain.release.model.Release
 import java.io.File
 
 @AssistedInject
 class NewUpdateScreenModel(
-    @Assisted changelogInfo: String,
-    @Assisted private val downloadLink: String,
-    private val context: Context,
-    private val network: NetworkHelper,
+    @Assisted releaseJson: String,
+    private val manager: AppUpdateManager,
 ) : ViewModel() {
-
-    val state: StateFlow<NewUpdateScreenModel.State>
-        field = MutableStateFlow<NewUpdateScreenModel.State>(State(changelogInfo = changelogInfo))
+    val release = Json.decodeFromString<Release>(releaseJson)
+    private val error = MutableStateFlow<String?>(null)
+    private val preparingInstall = MutableStateFlow(false)
+    val state = combine(manager.state, error, preparingInstall) { download, localError, preparing ->
+        val current = download?.takeIf { it.release.isSameUpdate(release) }
+        State(
+            stage = if (preparing) {
+                Stage.Verifying
+            } else {
+                when (current?.stage) {
+                    AppUpdateStage.QUEUED -> Stage.Queued
+                    AppUpdateStage.DOWNLOADING -> Stage.Downloading
+                    AppUpdateStage.VERIFYING -> Stage.Verifying
+                    AppUpdateStage.DOWNLOADED -> Stage.Downloaded
+                    AppUpdateStage.FAILED -> Stage.Failed
+                    null -> Stage.Available
+                }
+            },
+            downloadProgress = current?.progress ?: 0,
+            error = localError ?: current?.error,
+            canCancel = current?.stage in AppUpdateManager.activeStages,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), State())
 
     @AssistedFactory
     @ManualViewModelAssistedFactoryKey
     @ContributesIntoMap(AppScope::class)
     interface Factory : ManualViewModelAssistedFactory {
-        fun create(changelogInfo: String, downloadLink: String): NewUpdateScreenModel
+        fun create(releaseJson: String): NewUpdateScreenModel
     }
 
-    private val apkFile: File
-        get() = File(context.externalCacheDir, "update.apk")
+    fun startDownload() = perform { manager.download(release) }
+    fun cancelDownload() = perform { manager.cancelDownload() }
+    fun reconcile() = perform { manager.reconcileInstalledVersion() }
 
-    private var downloadJob: Job? = null
+    fun prepareInstall(onReady: (File) -> Unit) = perform {
+        if (preparingInstall.value) return@perform
+        preparingInstall.value = true
+        try {
+            onReady(manager.verifiedApk(release))
+        } finally {
+            preparingInstall.value = false
+        }
+    }
 
-    fun startDownload() {
-        if (downloadJob?.isActive == true) return
+    fun installError(message: String) {
+        error.value = message
+    }
 
-        downloadJob = viewModelScope.launch {
-            state.update { it.copy(downloadProgress = 0, stage = Stage.Downloading) }
+    private fun perform(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            error.value = null
             try {
-                withIOContext { downloadApk() }
-                state.update { it.copy(downloadProgress = 100, stage = Stage.Downloaded) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logcat(LogPriority.ERROR, e)
-                apkFile.delete()
-                state.update { it.copy(stage = Stage.Failed) }
+                action()
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                error.value = exception.message ?: "Could not complete the update action. Please try again."
             }
         }
-    }
-
-    private suspend fun downloadApk() {
-        val progressListener = object : ProgressListener {
-            // Progress of the download
-            var savedProgress = 0
-
-            // Keep track of the last update sent to avoid updating the state too often.
-            var lastTick = 0L
-
-            override fun update(bytesRead: Long, contentLength: Long, done: Boolean) {
-                val progress = (100 * (bytesRead.toFloat() / contentLength)).toInt()
-                val currentTime = System.currentTimeMillis()
-                if (progress > savedProgress && currentTime - 200 > lastTick) {
-                    savedProgress = progress
-                    lastTick = currentTime
-                    state.update { it.copy(downloadProgress = progress) }
-                }
-            }
-        }
-
-        val response = network.client.newCachelessCallWithProgress(GET(downloadLink), progressListener).awaitSuccess()
-        response.body.source().saveTo(apkFile)
-    }
-
-    fun installUpdate() {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkFile.getUriCompat(context), ExtensionInstaller.APK_MIME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
-        }
-        context.startActivity(intent)
     }
 
     @Immutable
     data class State(
-        val changelogInfo: String,
         val downloadProgress: Int = 0,
         val stage: Stage = Stage.Available,
+        val error: String? = null,
+        val canCancel: Boolean = false,
     )
 
-    enum class Stage {
-        Available,
-        Downloading,
-        Downloaded,
-        Failed,
-    }
+    enum class Stage { Available, Queued, Downloading, Verifying, Downloaded, Failed }
 }

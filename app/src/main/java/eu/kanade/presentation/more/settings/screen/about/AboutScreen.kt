@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -106,6 +107,16 @@ object AboutScreen : Screen() {
 
                 if (updaterEnabled) {
                     item {
+                        val pendingUpdate by context.appGraph.appUpdateManager.state.collectAsState()
+                        pendingUpdate?.let { download ->
+                            TextPreferenceWidget(
+                                title = stringResource(MR.strings.update_download_status),
+                                subtitle = download.release.version,
+                                onPreferenceClick = { navigator.push(NewUpdateScreen(download.release)) },
+                            )
+                        }
+                    }
+                    item {
                         TextPreferenceWidget(
                             title = stringResource(MR.strings.check_for_updates),
                             widget = {
@@ -124,12 +135,7 @@ object AboutScreen : Screen() {
                                         checkVersion(
                                             context = context,
                                             onAvailableUpdate = { result ->
-                                                val updateScreen = NewUpdateScreen(
-                                                    versionName = result.release.version,
-                                                    changelogInfo = result.release.info,
-                                                    releaseLink = result.release.releaseLink,
-                                                    downloadLink = result.release.downloadLink,
-                                                )
+                                                val updateScreen = NewUpdateScreen(result.release)
                                                 navigator.push(updateScreen)
                                             },
                                             onFinish = {

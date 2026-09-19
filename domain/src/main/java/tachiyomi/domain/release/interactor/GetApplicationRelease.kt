@@ -12,12 +12,12 @@ class GetApplicationRelease(
         val release = service.latest(arguments) ?: return Result.NoNewUpdate
 
         // Check if latest version is different from current version
-        val isNewVersion = isNewVersion(
-            arguments.isNightly,
-            arguments.commitCount,
-            arguments.versionName,
-            release.version,
-        )
+        val isNewVersion = if (arguments.isTranslator) {
+            val apk = requireNotNull(release.apk) { "Translator release is missing verified APK metadata" }
+            apk.versionCode > arguments.installedVersionCode
+        } else {
+            isNewVersion(arguments.isNightly, arguments.commitCount, arguments.versionName, release.version)
+        }
         return when {
             isNewVersion -> Result.NewUpdate(release)
             else -> Result.NoNewUpdate
@@ -30,28 +30,24 @@ class GetApplicationRelease(
         versionName: String,
         versionTag: String,
     ): Boolean {
-        // Removes prefixes like "r" or "v"
-        val newVersion = versionTag.replace("[^\\d.]".toRegex(), "")
         return if (isNightly) {
-            // Nightly builds: based on releases in "mihonapp/mihon-preview" repo
-            // tagged as something like "r1234"
-            newVersion.toInt() > commitCount
+            val revision = versionTag.removePrefix("r").toLongOrNull() ?: return false
+            revision > commitCount
         } else {
-            // Release builds: based on releases in "mihonapp/mihon" repo
-            // tagged as something like "v0.1.2"
-            val oldVersion = versionName.replace("[^\\d.]".toRegex(), "")
-
-            val newSemVer = newVersion.split(".").map { it.toInt() }
-            val oldSemVer = oldVersion.split(".").map { it.toInt() }
-
-            oldSemVer.mapIndexed { index, i ->
-                if (newSemVer[index] > i) {
-                    return true
-                }
+            val newSemVer = versionParts(versionTag) ?: return false
+            val oldSemVer = versionParts(versionName) ?: return false
+            for (index in 0 until maxOf(newSemVer.size, oldSemVer.size)) {
+                val comparison = (newSemVer.getOrElse(index) { 0L }).compareTo(oldSemVer.getOrElse(index) { 0L })
+                if (comparison != 0) return comparison > 0
             }
-
             false
         }
+    }
+
+    private fun versionParts(value: String): List<Long>? {
+        val numeric = value.removePrefix("v").substringBefore('-').substringBefore('+')
+        if (!numeric.matches(Regex("[0-9]+(?:\\.[0-9]+)*"))) return null
+        return numeric.split('.').map { it.toLongOrNull() ?: return null }
     }
 
     data class Arguments(
@@ -61,6 +57,8 @@ class GetApplicationRelease(
         val versionName: String,
         val repository: String,
         val forceCheck: Boolean = false,
+        val isTranslator: Boolean = false,
+        val installedVersionCode: Long = 0,
     )
 
     sealed interface Result {

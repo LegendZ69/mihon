@@ -232,6 +232,119 @@ class ReservationTests(unittest.TestCase):
             self.assertEqual(concurrent, git(remote, "rev-parse", "refs/heads/main"))
             self.assertEqual(concurrent, git(self.repo, "rev-parse", "HEAD"))
 
+    def test_main_mirror_workflow_rejection_is_actionable_without_exposing_remote_output(self):
+        with tempfile.TemporaryDirectory() as remote_temp:
+            remote = Path(remote_temp) / "remote.git"
+            git(self.repo, "init", "-q", "--bare", str(remote))
+            git(self.repo, "remote", "add", "origin", str(remote))
+            git(self.repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+            git(self.repo, "fetch", "-q", "origin", "refs/heads/main:refs/remotes/origin/main")
+            candidate = self.commit("upstream workflow update\n")
+            hook = remote / "hooks/pre-receive"
+            hook.write_text("#!/bin/sh\n"
+                            "echo 'refusing to allow a GitHub App to create or update workflow without workflows permission' >&2\n"
+                            "echo 'Authorization: Bearer fixture-secret-never-print' >&2\n"
+                            "exit 1\n")
+            hook.chmod(0o700)
+            with self.assertRaises(release.ReleaseError) as caught:
+                release.mirror_main(self.repo, candidate)
+            self.assertIn("main mirror", str(caught.exception))
+            self.assertIn("workflow_permission", str(caught.exception))
+            self.assertNotIn("fixture-secret-never-print", str(caught.exception))
+            self.assertNotIn(str(remote), str(caught.exception))
+            self.assertEqual(self.upstream, git(remote, "rev-parse", "refs/heads/main"))
+            self.assertEqual(candidate, git(self.repo, "rev-parse", "HEAD"))
+
+    def test_push_diagnostics_classify_rejections_without_printing_stdout_or_stderr(self):
+        cases = {
+            "workflow_permission": "refusing to allow an OAuth App to create or update workflow without workflow scope",
+            "protected_ref": "remote: error: GH013: Repository rule violations found",
+            "non_fast_forward": "! [rejected] HEAD -> codex/manga-translator (fetch first)",
+            "authentication": "fatal: Authentication failed for credential-bearing-url",
+            "permission_denied": "remote: Write access to repository not granted.",
+            "transport": "fatal: unable to access private-url: Could not resolve host: github.com",
+            "unknown": "unrecognized remote failure",
+        }
+        for reason, diagnostic in cases.items():
+            result = subprocess.CompletedProcess([], 1, "private-stdout", diagnostic + "\nBearer private-stderr")
+            with self.subTest(reason=reason), patch.object(release, "command", return_value=result):
+                with self.assertRaises(release.ReleaseError) as caught:
+                    release.push_sync_ref(self.repo, "HEAD:refs/heads/codex/manga-translator", "translator_push")
+                self.assertEqual(reason, caught.exception.reason)
+                self.assertIn("translator branch push", str(caught.exception))
+                self.assertNotIn("private-", str(caught.exception))
+
+    def test_unknown_sync_failure_does_not_claim_a_merge_conflict(self):
+        bodies = []
+
+        def github(repo, *args, **kwargs):
+            if "--method" in args:
+                bodies.append(json.loads(Path(args[args.index("--input") + 1]).read_text())["body"])
+                return subprocess.CompletedProcess([], 0, "{}", "")
+            return subprocess.CompletedProcess([], 0, "[[]]", "")
+
+        failure = release.SyncFailure("main_mirror", "unknown", 1)
+        with patch.object(release, "gh", side_effect=github):
+            release.record_blocked_sync(self.repo, self.upstream, self.upstream, failure)
+        self.assertEqual(1, len(bodies))
+        self.assertIn("main mirror", bodies[0])
+        self.assertIn("unknown", bodies[0])
+        self.assertNotIn("Resolve the upstream conflict", bodies[0])
+        self.assertNotIn("neither history was rewritten", bodies[0])
+        self.assertIn("No release was allocated", bodies[0])
+
+    def test_reservation_push_failure_preserves_allocation_uncertainty(self):
+        bodies = []
+
+        def github(repo, *args, **kwargs):
+            if "--method" in args:
+                bodies.append(json.loads(Path(args[args.index("--input") + 1]).read_text())["body"])
+                return subprocess.CompletedProcess([], 0, "{}", "")
+            return subprocess.CompletedProcess([], 0, "[[]]", "")
+
+        failure = release.SyncFailure("reservation_push", "transport", 1)
+        with patch.object(release, "gh", side_effect=github):
+            release.record_blocked_sync(self.repo, self.upstream, self.upstream, failure)
+        self.assertIn("reservation", bodies[0])
+        self.assertNotIn("No release was allocated", bodies[0])
+        self.assertIn("verify the remote tag", bodies[0])
+
+    def test_sync_failure_markers_distinguish_causes_but_deduplicate_repeats(self):
+        permission = release.SyncFailure("main_mirror", "workflow_permission", 1)
+        conflict = release.SyncFailure("upstream_merge", "merge_conflict", 1)
+        marker = release.blocked_sync_marker(self.upstream, self.upstream, permission)
+        self.assertNotEqual(marker, release.blocked_sync_marker(self.upstream, self.upstream, conflict))
+        existing = subprocess.CompletedProcess([], 0, json.dumps([[{"body": marker}]]), "")
+        with patch.object(release, "gh", return_value=existing) as github:
+            release.record_blocked_sync(self.repo, self.upstream, self.upstream, permission)
+        self.assertEqual(1, github.call_count)
+
+    def test_issue_reporting_failure_keeps_original_sync_failure(self):
+        failure = release.SyncFailure("main_mirror", "workflow_permission", 1)
+        with patch.object(release, "record_blocked_sync", side_effect=release.ReleaseError("private-reporting-error")), \
+                patch.object(release.sys, "stderr") as output:
+            release.report_sync_failure(self.repo, self.upstream, self.upstream, failure, "main_mirror")
+        message = "".join(call.args[0] for call in output.write.call_args_list)
+        self.assertIn("original failure remains authoritative", message)
+        self.assertNotIn("private-reporting-error", message)
+        for body in ("null", "{}", "[null]", "[[null]]", "[[42]]"):
+            with self.subTest(body=body), patch.object(release, "gh", return_value=
+                    subprocess.CompletedProcess([], 0, body, "")), patch.object(release.sys, "stderr") as output:
+                release.report_sync_failure(self.repo, self.upstream, self.upstream, failure, "main_mirror")
+                message = "".join(call.args[0] for call in output.write.call_args_list)
+                self.assertIn("original failure remains authoritative", message)
+
+    def test_agent_review_is_separate_from_unrequired_human_approval(self):
+        record = release.reserve_local(self.repo, "HEAD", self.upstream)
+        validation = release.validation_summary([], "passed", "passed", "passed", "2026-09-20T00:00:00Z")
+        self.assertEqual("agent", validation["passage_review"]["reviewer"])
+        self.assertEqual("not_run", validation["passage_review"]["status"])
+        self.assertEqual({"status": "not_run", "required": False}, validation["human_passage_approval"])
+        _, notes = release.release_description(record, validation)
+        self.assertNotIn("human passage approval remain pending", notes)
+        self.assertIn("agent visual and passage review", notes)
+        self.assertIn("not performed", notes)
+
     def test_apk_contract_rejects_wrong_cert_version_package_debug_or_abi(self):
         reservation = release.reserve_local(self.repo, "HEAD", self.upstream)
         apk = self.repo / "fixture.apk"
