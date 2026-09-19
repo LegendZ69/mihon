@@ -100,6 +100,10 @@ Replace the example check statuses with the observed outcomes. Defaults are `not
 missing JUnit reports remain unavailable, not zero tests. `package` verifies the real APK
 using `apksigner`, `aapt` and `zipalign -c -P 16 -v 4`; set `ANDROID_HOME` or pass `--apksigner`, `--aapt` and `--zipalign` paths.
 The package name, version code/name, ARM64-only native ABI and exact certificate must match.
+Certificate inspection uses verbose `apksigner` output with exactly one reported signer. It accepts
+the observed Android Build Tools 37 scheme labels and legacy ordinal/range labels; all APK
+certificate digests must match the preserved certificate. Source-stamp digests never establish
+the application signing identity. Unknown formats fail closed.
 The 16 KB ZIP alignment check is separate from native ELF/runtime acceptance.
 Local signing still uses the existing local keystore configuration. `package` refuses a
 modified tracked checkout or a checkout different from its reserved commit.

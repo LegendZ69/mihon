@@ -286,8 +286,30 @@ def sha256(path: Path) -> str:
 
 
 def verify_apk_contract(apk: Path, record: Reservation, signer: str, badging: str) -> dict:
-    certificates = re.findall(r"Signer #[0-9]+ certificate SHA-256 digest:\s*([0-9a-fA-F]{64})", signer)
-    if len(certificates) != 1 or certificates[0].lower() != CERT:
+    lines = signer.splitlines()
+    if [line for line in lines if line.startswith("Number of signers")] != ["Number of signers: 1"]:
+        raise ReleaseError("APK verification must report exactly one signer")
+    certificates = []
+    for line in lines:
+        if "certificate SHA-256 digest" not in line:
+            continue
+        # A source stamp signs provenance, not the installed application identity.
+        if re.fullmatch(r"Source Stamp Signer:? certificate SHA-256 digest: [0-9a-fA-F]{64}", line):
+            continue
+        # SDK37 names the signature scheme; older tools use an ordinal or an SDK range.
+        # Only documented/observed labels qualify, and every reported scheme must use
+        # the preserved key. A rotation to a different identity is not accepted.
+        match = re.fullmatch(
+            r"(?:Signer #1|V(?:1|2|3\.0) Signer:|(?:Signer|V3\.1 Signer:) "
+            r"\(minSdkVersion=(?P<minimum>[0-9]{1,10})(?: \(dev release=true\))?, "
+            r"maxSdkVersion=(?P<maximum>[0-9]{1,10})\)) "
+            r"certificate SHA-256 digest: (?P<certificate>[0-9a-fA-F]{64})", line)
+        if not match:
+            raise ReleaseError("Unrecognized APK signer certificate report")
+        if match["minimum"] is not None and not 1 <= int(match["minimum"]) <= int(match["maximum"]) <= 2147483647:
+            raise ReleaseError("Invalid APK signer SDK range")
+        certificates.append(match["certificate"].lower())
+    if not certificates or any(certificate != CERT for certificate in certificates):
         raise ReleaseError("APK certificate differs from the preserved installation certificate")
     package = re.search(r"^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)'", badging, re.M)
     if not package or package[1] != "app.mihon" or int(package[2]) != record.version_code:
@@ -810,7 +832,8 @@ def main() -> int:
         elif args.command == "package":
             record = record_by_tag(repo, args.tag)
             apk = args.apk.resolve()
-            signer = command(repo, find_android_tool("apksigner", args.apksigner), "verify", "--print-certs", str(apk)).stdout
+            signer = command(repo, find_android_tool("apksigner", args.apksigner),
+                             "verify", "--verbose", "--print-certs", str(apk)).stdout
             manifest = command(repo, find_android_tool("aapt", args.aapt), "dump", "badging", str(apk)).stdout
             metadata = verify_apk_contract(apk, record, signer, manifest)
             command(repo, find_android_tool("zipalign", args.zipalign), "-c", "-P", "16", "-v", "4", str(apk))

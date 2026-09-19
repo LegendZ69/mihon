@@ -238,7 +238,7 @@ class ReservationTests(unittest.TestCase):
         with zipfile.ZipFile(apk, "w") as archive:
             archive.writestr("lib/arm64-v8a/libfixture.so", b"fixture")
         manifest = "package: name='app.mihon' versionCode='100015' versionName='0.20.4-translator.15'"
-        signer = "Signer #1 certificate SHA-256 digest: " + release.CERT
+        signer = "Number of signers: 1\nSigner #1 certificate SHA-256 digest: " + release.CERT
         checked = release.verify_apk_contract(apk, reservation, signer, manifest)
         self.assertEqual("0.20.4-translator.15", checked["version_name"])
         for bad in (
@@ -255,6 +255,72 @@ class ReservationTests(unittest.TestCase):
             archive.writestr("lib/x86_64/libfixture.so", b"fixture")
         with self.assertRaises(release.ReleaseError):
             release.verify_apk_contract(apk, reservation, signer, manifest)
+
+    def test_apk_contract_accepts_sdk37_v2_signer_for_preserved_certificate(self):
+        reservation = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("lib/arm64-v8a/libfixture.so", b"fixture")
+        manifest = "package: name='app.mihon' versionCode='100015' versionName='0.20.4-translator.15'"
+        signer = ("Verifies\nVerified using v2 scheme (APK Signature Scheme v2): true\n"
+                  "Number of signers: 1\nV2 Signer: certificate SHA-256 digest: " + release.CERT)
+        checked = release.verify_apk_contract(apk, reservation, signer, manifest)
+        self.assertEqual(release.CERT, checked["certificate_sha256"])
+
+    def test_apk_contract_accepts_known_scheme_reports_only_with_one_preserved_identity(self):
+        reservation = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("lib/arm64-v8a/libfixture.so", b"fixture")
+        manifest = "package: name='app.mihon' versionCode='100015' versionName='0.20.4-translator.15'"
+        labels = ["Signer #1", "V1 Signer:", "V2 Signer:", "V3.0 Signer:",
+                  "Signer (minSdkVersion=28, maxSdkVersion=32)",
+                  "Signer (minSdkVersion=33 (dev release=true), maxSdkVersion=2147483647)",
+                  "V3.1 Signer: (minSdkVersion=33, maxSdkVersion=2147483647)"]
+        reports = [f"{label} certificate SHA-256 digest: {release.CERT}" for label in labels]
+        for lines in ([line] for line in reports):
+            with self.subTest(lines=lines):
+                checked = release.verify_apk_contract(apk, reservation,
+                    "Number of signers: 1\n" + "\n".join(lines), manifest)
+                self.assertEqual(release.CERT, checked["certificate_sha256"])
+        # SDK37 can report the same installed signer for more than one signature scheme.
+        report = "Number of signers: 1\n" + "\n".join(reports[1:4])
+        report += "\nSource Stamp Signer certificate SHA-256 digest: " + "0" * 64
+        self.assertEqual(release.CERT, release.verify_apk_contract(apk, reservation,
+                         report, manifest)["certificate_sha256"])
+        self.assertEqual(release.CERT, release.verify_apk_contract(apk, reservation,
+                         report.replace("Source Stamp Signer certificate", "Source Stamp Signer: certificate"),
+                         manifest)["certificate_sha256"])
+
+    def test_apk_contract_rejects_ambiguous_malformed_or_untrusted_signer_reports(self):
+        reservation = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("lib/arm64-v8a/libfixture.so", b"fixture")
+        manifest = "package: name='app.mihon' versionCode='100015' versionName='0.20.4-translator.15'"
+        certificate = "V2 Signer: certificate SHA-256 digest: " + release.CERT
+        valid = "Number of signers: 1\n" + certificate
+        invalid = [certificate, valid.replace("signers: 1", "signers: 2"),
+                   valid.replace("signers: 1", "signers: 01"), valid.replace("signers: 1", "signers: x"),
+                   valid + "\nNumber of signers: 1", valid.replace(release.CERT, "0" * 64),
+                   valid.replace("V2 Signer:", "Unknown Signer:"),
+                   valid.replace("V2 Signer:", "Signer #2"),
+                   valid.replace("V2 Signer:", "Source Stamp Signer"),
+                   valid.replace("V2 Signer:", "Source Stamp Signer:"),
+                   valid.replace("certificate SHA-256", "public key SHA-256"),
+                   valid.replace(release.CERT, release.CERT[:-1]), valid + " extra",
+                   valid + "\nSigner #2 certificate SHA-256 digest: " + release.CERT,
+                   valid + "\nV1 Signer: certificate SHA-256 digest: " + "0" * 64,
+                   valid + "\nV1 Signer: certificate SHA-256 digest: malformed"]
+        for label in ("V3.1 Signer: (minSdkVersion=34, maxSdkVersion=33)",
+                      "V3.1 Signer: (minSdkVersion=0, maxSdkVersion=33)",
+                      "V3.1 Signer: (minSdkVersion=33, maxSdkVersion=2147483648)",
+                      "V3.1 Signer: (minSdkVersion=x, maxSdkVersion=33)",
+                      "V3.1 Signer: (minSdkVersion=33 (dev release=false), maxSdkVersion=34)"):
+            invalid.append(valid + f"\n{label} certificate SHA-256 digest: {release.CERT}")
+        for report in invalid:
+            with self.subTest(report=report), self.assertRaises(release.ReleaseError):
+                release.verify_apk_contract(apk, reservation, report, manifest)
 
     def test_validation_summary_excludes_raw_failure_text_and_property_secrets(self):
         report = self.repo / "TEST-secret.xml"
