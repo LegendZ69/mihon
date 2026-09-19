@@ -157,16 +157,16 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2<f32>(0.0, 1.0),
         vec2<f32>(1.0, 1.0)
     );
-    
+
     let pos = positions[vertex_index];
-    
+
     // Apply offset to position
     let offset_pos = pos + uniforms.offset;
-    
+
     // Convert to NDC
     let ndc_x = offset_pos.x * 2.0 - 1.0;
     let ndc_y = 1.0 - offset_pos.y * 2.0;
-    
+
     var out: VertexOutput;
     out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
     out.uv = pos;

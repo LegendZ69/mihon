@@ -22,3 +22,6 @@
 *.woff binary
 *.pyc binary
 *.swp binary
+
+# Comic archives are binary; preserve fixture and source bytes.
+*.cbz binary

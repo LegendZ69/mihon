@@ -85,17 +85,17 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2<f32>(0.0, 1.0), // Bottom-left
         vec2<f32>(1.0, 1.0)  // Bottom-right
     );
-    
+
     let pos = positions[vertex_index];
-    
+
     // Interpolate between rect bounds (in normalized 0-1 coords stored in params)
     let x = mix(params.rect.x, params.rect.z, pos.x);
     let y = mix(params.rect.y, params.rect.w, pos.y);
-    
+
     // Convert to NDC [-1, 1]
     let ndc_x = x * 2.0 - 1.0;
     let ndc_y = 1.0 - y * 2.0;
-    
+
     var out: VertexOutput;
     out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
     return out;
