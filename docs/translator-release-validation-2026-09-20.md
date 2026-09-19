@@ -1,6 +1,6 @@
 # Translator releases: upstream synchronization and validation
 
-Validation checkpoint: 20 September 2026. **Published as Partially tested; one K90 native UI failure remains unresolved.** This report preserves the decoder and populated-queue regressions, their fixes, and later test-only harness timing failures. Both reader smoke checks passed on `943464a5b`; source `b2fe5ccbf` has a completed minified build, an emulator 39/39 pass and a retained K90 38/39 result. Earlier failures remain evidence. Japanese AI orientation, final WebGPU performance measurements, spoken TalkBack and human passage approval remain open. No paid provider calls were made in this phase; existing uncertain reservations and the S$270 dispatch stop/S$300 cumulative ceiling remain unchanged.
+Validation checkpoint: 20 September 2026. **V15, v17 and v19 are published as Partially tested prereleases. One K90 native UI failure remains unresolved.** V19 is the latest CI artifact; its device checks are not run. V15 remains installed and carries the Mac/device evidence below. This report preserves the decoder and populated-queue regressions, their fixes, and later test-only harness timing failures. Both reader smoke checks passed on `943464a5b`; source `b2fe5ccbf` has a completed minified build, an emulator 39/39 pass and a retained K90 38/39 result. Earlier failures remain evidence. Japanese AI orientation, final WebGPU performance measurements, spoken TalkBack and human passage approval remain open. No paid provider calls were made in this phase; existing uncertain reservations and the S$270 dispatch stop/S$300 cumulative ceiling remain unchanged.
 
 ## Source and release identity
 
@@ -11,7 +11,7 @@ Validation checkpoint: 20 September 2026. **Published as Partially tested; one K
 | Release automation | `2209c40240ccf35774a7712855f2767c25bfa813` |
 | Decoder-coordinate fix and explicit device-receipt scope | `d49ac4e705e014a2c088f1439830eabaae5ad15d` |
 | German locale integration; completed device checkpoint | Merge `89d7490f0364a23e37b3bd5b25a3f76c6f08837d`, incorporating upstream `385d076d4369535c2839193cd29e2b32741989b1` |
-| Latest upstream integration checkpoint | Merge `04b5b8ac7424d542ac8531d6716d716ad7c64868`, incorporating AGP 9.4.1 update `504ec2afaea49cf8bb8dab03164f2feca8ffb3b6`; candidate build cancelled before delivery |
+| Last upstream integration before v15 | Merge `04b5b8ac7424d542ac8531d6716d716ad7c64868`, incorporating AGP 9.4.1 update `504ec2afaea49cf8bb8dab03164f2feca8ffb3b6`; candidate build cancelled before delivery |
 | Populated-queue/settings gesture preference fix | `e4f8dd8e30e69dd4b8eadd7d2157d3e06f9bbd0f`; manual normal-app reader-to-queue navigation passed |
 | Native dialog-harness refinement | `943464a5bfa91b6d15ce8789897495448014b915`; normal reader checks completed, emulator transition-timing failure retained |
 | Final native window-transition harness refinement | `b2fe5ccbf755bda06905412e1105763b14caf63b`; test-only centralized focused-root waiting, reconciled build completed |
@@ -239,13 +239,68 @@ now use the authoritative REST creation response, validating identity and flags 
 upload. Malformed responses and ambiguous transport failures stop without blind retries;
 a subsequent run recovers the existing draft and original bundle. All **31 release-control
 tests** pass, including first publication with persistently stale tag/list reads and interrupted
-creation followed by restart. Hosted first-attempt publication remains pending for that change.
+creation followed by restart. Hosted first-attempt publication subsequently passed on v19, as recorded below.
 
 Upstream then
 advanced to tracker-profile refresh commit `01e3f8c60557d89b6cd9d28c11f41d676d0ab5d9`;
 `main` has been fast-forwarded and translator merge
 `cd45ca46d5677064d0f9028124f1bba60276c34f` completed without conflict.
-The next release will identify this integration and its own validation scope.
+V19 identifies this integration and its own CI validation scope.
+
+### First observed scheduled integration and concurrent local push
+
+[Scheduled run 35461986301](https://github.com/LegendZ69/mihon/actions/runs/35461986301)
+is the first observed timer-triggered run. It merged upstream tracker-profile refresh
+`01e3f8c60557d89b6cd9d28c11f41d676d0ab5d9` as
+`39500048570550eceeb7bad8e31d115d7efdad83` and reserved `translator-v18`.
+The fork's `main` matches that exact upstream commit. This establishes an observed scheduled
+integration; it does not promise exact five-minute detection.
+
+That scheduled merge raced with the local publisher-fix push. Git rejected the stale local
+push normally. Both histories were merged into
+`4deaa6b22984e9653e2835352218cae5a85541d9` and pushed without force or discarded commits.
+The subsequent [push run 35462072362](https://github.com/LegendZ69/mihon/actions/runs/35462072362)
+was observed pending behind the running scheduled build. The scheduled run **completed
+successfully**, including formatting, host tests, migrations, normal minified compilation,
+signature/identity checks and packaging. It preserved Actions artifact `10590590621`,
+digest `cfc68b5badbfe765ac6c99abcb7f872b3f9e3d864b7b72417faf12db1fe1e1cb`.
+Publication returned **`deferred_source_advanced`** at 18:51:48 UTC because the translator
+head now included the publisher fix. No v18 release was published, and its reserved number
+remains consumed. This is an observed freshness guard, not a failed compilation. The next
+serialized run published v19 successfully on its first attempt, as recorded below.
+
+### V19: first-attempt publication completed
+
+[Run 35462072362](https://github.com/LegendZ69/mihon/actions/runs/35462072362) completed
+successfully on **run attempt 1**. It compiled, signed, packaged and published
+[Translator v19](https://github.com/LegendZ69/mihon/releases/tag/translator-v19) without
+manual recovery. This is the hosted verification of the authoritative creation-response fix.
+Its exact source is `4deaa6b22984e9653e2835352218cae5a85541d9`, incorporating upstream
+`01e3f8c60557d89b6cd9d28c11f41d676d0ab5d9`. The source includes publisher correction
+`961891aa1d6b862b9d743bd3e01ffdf0e359b1d7` and both preserved upstream-merge histories.
+
+| V19 public artifact | Independently downloaded SHA-256 |
+| --- | --- |
+| manifest.json | `d43b41e62a142388c298b4b2f07da153ef223130c2861b614197eb32c6aab9cb` |
+| mihon-translator-v19-arm64-v8a.apk | `6036107c8d5737cc7799c8d4de2f691bcb58be8f8b4a4e267841d7a0157e7910` |
+| mihon-translator-v19-source.zip | `00a78e9cedb47298d0a5de7cdc2bf6ea5f6f570a91843ed85a7c13808da1374c` |
+| SHA256SUMS | `9d8a3a6bfea9b60d45d92a7fc0173b95696fea6a82c6ae6616d013afe9969474` |
+| validation.json | `159b859e1e4d4f0e17cd08c1113cb78476061e468a61c94c8a1f1c6c6c04117f` |
+
+The APK independently passes cryptographic verification with the preserved certificate,
+`app.mihon`/ARM64 identity, version `0.20.4-translator.19` / **100019**, and 16 KB ZIP
+alignment. All five asset digests, byte counts, manifest and checksums agree. All **1,882
+source files** match the tagged Git blobs, accounting only for the declared `.idea/icon.svg`
+CRLF conversion. Receipts are `v19-public-download-verification.json`, the SDK 37 signature
+output and ZIP alignment report. An independent second audit also checks publication flags
+and unchanged v15/v17 asset IDs/digests.
+
+V19 passes formatting, SQLDelight migrations and the host suite; its public summary records
+**470 app/domain tests**, with zero failures/errors/skips. The **31 release-control tests**
+also pass. Exact-artifact device, live-provider and human checks are **not run** and are
+explicit in `validation.json`. Earlier v15 device evidence is not reassigned to this CI APK.
+It is a **Partially tested prerelease**, not a validated release. V15 remains installed on
+the handset, preserving its verified state and all restoration receipts.
 
 Public assets comprise the normal ARM64 APK, full tracked-source `git archive`, SHA-256 checksums, manifest and sanitized aggregate validation. Credentials and private raw logs/API captures are excluded. Release titles distinguish **Untested** from **Partially tested**; neither label implies overall acceptance. This v15 prerelease is **Partially tested**, with the final device aggregate explicitly **failed** because the K90 prompt method remains unresolved. Its publication does not mark the build validated or close that acceptance gap.
 
@@ -255,13 +310,13 @@ Public assets comprise the normal ARM64 APK, full tracked-source `git archive`, 
 | Remote asset reconciliation | **PASS — all five downloaded assets** match original bytes and GitHub digests |
 | Final K90 prompt-autosave verification | **OPEN / FAILED CHECK** — retain 38/39 matrix and both failed exact-APK reruns; no production root cause established |
 | GitHub release publication | **PUBLISHED** — [v15](https://github.com/LegendZ69/mihon/releases/tag/translator-v15); the same empty draft was resumed with the original bundle after the retained HTTP 404 failure |
-| Automation enabled after publication | **PASS — true**, after published v15 asset verification |
+| Automation enabled and observed | **PASS — true**; actual scheduled upstream integration observed in run `35461986301`, followed by source-advance deferral and serialized v19 publication |
 | Observed unchanged-source no-op and serialization | **PASS** — actual runs `35459679141` and `35459680627`, both successful with build skipped; sequential timings above, no new tag or asset overwrite |
-| Later tooling releases | **V16 FAILED / NOT PUBLISHED** — immutable consumed reservation. **V17 PUBLISHED** from its preserved verified CI bundle; all five downloaded assets independently verified; v15 remains unchanged |
+| Later releases | **V16 FAILED / NOT PUBLISHED**; **V17 PUBLISHED** by exact-bundle recovery; **V18 DEFERRED / NOT PUBLISHED** after a source advance; **V19 PUBLISHED on first attempt**. All published assets independently verified; earlier release bytes unchanged |
 | Current settings checks | **UI-verified:** controlled-series chapter-ahead 5, automatic translation off, Ignore SFX on; benchmark Battery saver (recommended), autostart off and notifications off |
 | Main high-quality renderer restoration | **PASS — restored on**, explicit WebGPU smoke completed; current backend WebGPU, reader page 7 restored |
 | Final post-validation settings check and owned fixture cleanup | **PASS within recorded scope** — settings/signing/hash restoration verified; 13 owned run archives verified before exact UUID directories were removed; both owned external fixture roots absent; reverse mappings empty; owned emulator stopped; main app foreground restored |
-| Issue #1 update | [Published release/validation checkpoint](https://github.com/LegendZ69/mihon/issues/1#issuecomment-5744180042); final automation outcome will be reconciled in that comment |
+| Issue #1 update | [Published release/validation checkpoint](https://github.com/LegendZ69/mihon/issues/1#issuecomment-5744180042); reconciled release and automation outcomes are recorded in that comment |
 
 ## Reproduction and evidence scope
 
