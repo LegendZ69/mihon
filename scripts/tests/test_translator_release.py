@@ -20,6 +20,72 @@ def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
+class ReleaseMetadataTests(unittest.TestCase):
+    def test_tag_404_discovers_exact_draft_on_later_authenticated_release_page(self):
+        draft = {"id": 15, "tag_name": "translator-v15", "draft": True, "prerelease": True, "assets": []}
+        other = {**draft, "id": 16, "tag_name": "translator-v150"}
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        listing = subprocess.CompletedProcess([], 0, json.dumps([[other], [draft]]), "")
+        with patch.object(release, "gh", side_effect=[missing, listing]) as client:
+            self.assertEqual(draft, release.release_metadata(Path("."), "translator-v15"))
+        self.assertEqual(2, client.call_count)
+        self.assertIn("--paginate", client.call_args.args)
+        self.assertIn("--slurp", client.call_args.args)
+
+
+    def test_release_discovery_only_returns_absent_after_successful_complete_listing(self):
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        other = {"id": 150, "tag_name": "translator-v150", "draft": True, "prerelease": True, "assets": []}
+        for pages in ([[]], [[other], []]):
+            with self.subTest(pages=pages), patch.object(release, "gh", side_effect=[
+                missing, subprocess.CompletedProcess([], 0, json.dumps(pages), "")
+            ]):
+                self.assertIsNone(release.release_metadata(Path("."), "translator-v15"))
+
+    def test_published_tag_uses_direct_lookup_and_rejects_wrong_or_invalid_metadata(self):
+        published = {"id": 15, "tag_name": "translator-v15", "draft": False, "prerelease": True, "assets": []}
+        with patch.object(release, "gh", return_value=subprocess.CompletedProcess([], 0, json.dumps(published), "")) as client:
+            self.assertEqual(published, release.release_metadata(Path("."), "translator-v15"))
+        self.assertEqual(1, client.call_count)
+        for body in ("null", "[]", "{", json.dumps({**published, "tag_name": "translator-v16"}),
+                     json.dumps({**published, "draft": "false"})):
+            with self.subTest(body=body), patch.object(release, "gh", return_value=
+                    subprocess.CompletedProcess([], 0, body, "")):
+                with self.assertRaises(release.ReleaseError):
+                    release.release_metadata(Path("."), "translator-v15")
+
+    def test_release_discovery_refuses_authentication_transport_and_pagination_errors(self):
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        for status in (401, 403, 500):
+            failed = subprocess.CompletedProcess([], 1, "", f"gh: failure (HTTP {status})")
+            with self.subTest(tag_status=status), patch.object(release, "gh", return_value=failed) as client:
+                with self.assertRaises(release.ReleaseError):
+                    release.release_metadata(Path("."), "translator-v15")
+                self.assertEqual(1, client.call_count)
+        for status in (401, 403, 404, 502):
+            # Even a partial successful page cannot establish draft absence when pagination fails.
+            failed = subprocess.CompletedProcess([], 1, "[[]]", f"gh: failure (HTTP {status})")
+            with self.subTest(list_status=status), patch.object(release, "gh", side_effect=[missing, failed]):
+                with self.assertRaises(release.ReleaseError):
+                    release.release_metadata(Path("."), "translator-v15")
+
+    def test_release_listing_rejects_malformed_pages_duplicate_tags_and_invalid_flags(self):
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        draft = {"id": 15, "tag_name": "translator-v15", "draft": True, "prerelease": True, "assets": []}
+        invalid = ["{", "null", "{}", "[]", json.dumps([draft]), json.dumps([[None]]),
+                   json.dumps([[draft], [draft]]), json.dumps([[draft], [{**draft, "id": 16}]])]
+        for change in ({"id": True}, {"id": 0}, {"tag_name": None}, {"draft": 1},
+                       {"prerelease": None}, {"assets": {}}, {"assets": [None]}):
+            invalid.append(json.dumps([[{**draft, **change}]]))
+        invalid.append(json.dumps([[{key: value for key, value in draft.items() if key != "draft"}]]))
+        for body in invalid:
+            with self.subTest(body=body), patch.object(release, "gh", side_effect=[
+                missing, subprocess.CompletedProcess([], 0, body, "")
+            ]):
+                with self.assertRaises(release.ReleaseError):
+                    release.release_metadata(Path("."), "translator-v15")
+
+
 class ReservationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -253,6 +319,54 @@ class ReservationTests(unittest.TestCase):
             release.assets_to_upload(files, {"app.apk": "a" * 64}, True)
         with self.assertRaises(release.ReleaseError):
             release.assets_to_upload(files, {**files, "unexpected.txt": "d" * 64}, False)
+
+    def test_publish_resumes_hidden_draft_without_recreating_or_replacing_exact_existing_assets(self):
+        record = release.reserve_local(self.repo, "HEAD", self.upstream)
+        apk = self.repo / "fixture.apk"
+        apk.write_bytes(b"verified-synthetic-release-apk")
+        output = self.repo / "original-bundle"
+        validation = release.validation_summary([], "passed", "passed", "passed", "2026-09-20T00:00:00Z")
+        release.bundle(self.repo, record, apk, output,
+                       {"version_code": record.version_code, "certificate_sha256": release.CERT}, validation)
+        local = release.verify_bundle(self.repo, record, output)
+        names = sorted(local)
+        tag_object = git(self.repo, "rev-parse", record.tag)
+        for existing_names in (names[:1], names):
+            uploaded = []
+            edited = []
+            draft = {"id": 15, "tag_name": record.tag, "draft": True, "prerelease": True,
+                     "assets": [{"name": name, "digest": "sha256:" + local[name]} for name in existing_names]}
+
+            def client(repo, *args, **kwargs):
+                if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases/tags/{record.tag}"):
+                    return subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+                if args[:2] == ("api", f"repos/{release.REPOSITORY}/releases?per_page=100"):
+                    return subprocess.CompletedProcess([], 0, json.dumps([[draft]]), "")
+                if args[:2] == ("release", "upload"):
+                    self.assertEqual(record.tag, args[2])
+                    path = Path(args[3])
+                    self.assertEqual(local[path.name], release.sha256(path))
+                    self.assertNotIn(path.name, existing_names)
+                    self.assertNotIn("--clobber", args)
+                    uploaded.append(path.name)
+                    return subprocess.CompletedProcess([], 0, "", "")
+                if args[:2] == ("release", "edit"):
+                    self.assertEqual(record.tag, args[2])
+                    self.assertIn("--draft=false", args)
+                    edited.append(args[2])
+                    return subprocess.CompletedProcess([], 0, "", "")
+                self.fail(f"Unexpected remote action: {args[:2]}")
+
+            def remote(repo, name, ref):
+                return record.source_sha if ref.endswith("^{}") else tag_object
+
+            with self.subTest(existing=existing_names), patch.object(release, "gh", side_effect=client), \
+                    patch.object(release, "remote_sha", side_effect=remote), \
+                    patch.object(release, "remote_heads_current", return_value=True):
+                self.assertEqual("published", release.publish(self.repo, record, output))
+            self.assertEqual(sorted(set(names) - set(existing_names)), sorted(uploaded))
+            self.assertEqual([record.tag], edited)
+            self.assertEqual(local, release.verify_bundle(self.repo, record, output))
 
     def test_blocked_sync_comment_is_deduplicated_for_same_source_and_upstream(self):
         marker = release.blocked_sync_marker(self.upstream, "a" * 40)

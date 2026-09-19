@@ -151,13 +151,50 @@ def gh(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProces
 
 
 def release_metadata(repo: Path, tag: str) -> dict | None:
+    def validate(value: object) -> dict:
+        if not isinstance(value, dict) or type(value.get("id")) is not int or value["id"] <= 0:
+            raise ReleaseError("GitHub returned an invalid release identity")
+        if not isinstance(value.get("tag_name"), str) or not value["tag_name"]:
+            raise ReleaseError("GitHub returned an invalid release tag")
+        if type(value.get("draft")) is not bool or type(value.get("prerelease")) is not bool:
+            raise ReleaseError("GitHub returned invalid release publication flags")
+        if not isinstance(value.get("assets"), list) or any(not isinstance(asset, dict) for asset in value["assets"]):
+            raise ReleaseError("GitHub returned invalid release assets")
+        return value
+
+    def decode(body: str) -> object:
+        try:
+            return json.loads(body)
+        except ValueError as error:
+            raise ReleaseError("GitHub returned malformed release metadata") from error
+
     # gh api prints status only on stderr here; no HTTP response body is logged.
     result = gh(repo, "api", f"repos/{REPOSITORY}/releases/tags/{tag}", check=False)
     if result.returncode:
-        if "HTTP 404" in result.stderr:
-            return None
-        raise ReleaseError("Could not inspect GitHub release; refusing to assume it is absent")
-    value = json.loads(result.stdout)
+        if "HTTP 404" not in result.stderr:
+            raise ReleaseError("Could not inspect GitHub release; refusing to assume it is absent")
+        # The tag endpoint may hide drafts. Authenticated release listings include drafts for
+        # callers with push access: https://docs.github.com/en/rest/releases/releases#list-releases
+        listing = gh(repo, "api", f"repos/{REPOSITORY}/releases?per_page=100", "--paginate", "--slurp", check=False)
+        if listing.returncode:
+            raise ReleaseError("Could not list GitHub releases; refusing to assume the draft is absent")
+        pages = decode(listing.stdout)
+        if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+            raise ReleaseError("GitHub returned invalid release pagination")
+        matches = []
+        identities = set()
+        for page in pages:
+            for item in page:
+                value = validate(item)
+                if value["id"] in identities:
+                    raise ReleaseError("GitHub returned duplicate release identities")
+                identities.add(value["id"])
+                if value["tag_name"] == tag:
+                    matches.append(value)
+        if len(matches) > 1:
+            raise ReleaseError("GitHub returned duplicate releases for the reserved tag")
+        return matches[0] if matches else None
+    value = validate(decode(result.stdout))
     if value.get("tag_name") != tag:
         raise ReleaseError("GitHub returned a different release tag")
     return value
