@@ -14,34 +14,37 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import mihon.feature.translation.ocr.PaddleModelState
+import tachiyomi.domain.translation.service.TranslationRepository
 
 /** One process-owned publisher keeps chapter and model progress under the same update/card budgets. */
 @Inject
 @SingleIn(AppScope::class)
-class TranslationNotificationCenter(context: Context, preferences: TranslationPreferences) {
+class TranslationNotificationCenter(
+    context: Context,
+    preferences: TranslationPreferences,
+    repository: TranslationRepository,
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val publisher = TranslationNotifications(context)
     private val chapters = MutableStateFlow<TranslationNotificationSnapshot?>(null)
-    private val workerRunning = MutableStateFlow(false)
     private val models = MutableStateFlow<List<PaddleModelState>>(emptyList())
     private var modelObserver: Job? = null
 
     private val publishing = scope.launch {
-        val snapshots = combine(chapters, models, preferences.settings, workerRunning) {
+        val snapshots = combine(chapters, models, preferences.settings, repository.observeJobs()) {
                 chapter,
                 packs,
                 settings,
-                running,
+                jobs,
             ->
             (chapter ?: TranslationNotificationSnapshot(emptyList(), emptyList(), settings.notificationChapterCards))
-                .copy(cardLimit = settings.notificationChapterCards, models = packs) to !running
+                .withLatestJobs(jobs)
+                .copy(cardLimit = settings.notificationChapterCards, models = packs)
         }
-        snapshots.notificationUpdates { (snapshot, standalone) ->
-            Triple(snapshot.stateKey, standalone, snapshot.cardLimit)
-        }.collect { (snapshot, standalone) ->
+        snapshots.notificationUpdates { snapshot -> snapshot.stateKey to snapshot.cardLimit }.collect { snapshot ->
             // Permission/channel policy may change between checking and notifying.
             try {
-                publisher.publish(snapshot, standalone)
+                publisher.publish(snapshot)
             } catch (_: SecurityException) { }
         }
     }
@@ -54,7 +57,6 @@ class TranslationNotificationCenter(context: Context, preferences: TranslationPr
     internal fun chapterProgress(
         snapshot: TranslationNotificationSnapshot,
     ) {
-        workerRunning.value = true
         chapters.value =
             snapshot
     }
@@ -62,8 +64,6 @@ class TranslationNotificationCenter(context: Context, preferences: TranslationPr
         snapshot: TranslationNotificationSnapshot,
     ) {
         chapters.value = snapshot
-        workerRunning.value =
-            false
     }
     internal fun withModels(snapshot: TranslationNotificationSnapshot) = snapshot.copy(models = models.value)
 }

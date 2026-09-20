@@ -43,6 +43,12 @@ internal data class TranslationNotificationSnapshot(
         "${it.profile}:${it.korean}:${it.status}:${it.operationId}:${it.error}"
     }
     val activeModels get() = models.filter { it.status == PaddleModelStatus.DOWNLOADING }
+
+    /** A stopped worker cannot publish later Cancel/deletion changes; durable rows remain authoritative. */
+    fun withLatestJobs(latest: List<TranslationJob>): TranslationNotificationSnapshot {
+        val byId = latest.associateBy { it.id }
+        return copy(jobs = jobs.mapNotNull { byId[it.id] })
+    }
 }
 
 /** Chapter and model cards use one shared card limit and durable operation links. */
@@ -58,9 +64,19 @@ internal class TranslationNotifications(private val context: Context) {
         )
     }
 
-    fun summary(
+    /** WorkManager removes this notification independently; it must never own the chapter/model group. */
+    fun foreground(
         snapshot: TranslationNotificationSnapshot?,
         preparing: String = "Preparing translation queue",
+    ): Notification = queueSummary(snapshot, preparing, grouped = false)
+
+    private fun summary(snapshot: TranslationNotificationSnapshot): Notification =
+        queueSummary(snapshot, "Preparing translation queue", grouped = true)
+
+    private fun queueSummary(
+        snapshot: TranslationNotificationSnapshot?,
+        preparing: String,
+        grouped: Boolean,
     ): Notification {
         val jobs = snapshot?.jobs.orEmpty()
         val active = jobs.filter { it.state in TranslationManager.activeStates }
@@ -82,9 +98,8 @@ internal class TranslationNotifications(private val context: Context) {
                 models.map { "${it.profile.name.lowercase()} OCR pack · ${it.downloadBytes}/${it.totalBytes} bytes" }
         return base().setContentTitle("Mihon translator").setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText((listOf(text) + lines).joinToString("\n")))
-            .setGroup(
-                GROUP,
-            ).setGroupSummary(true).setOngoing(active.isNotEmpty() || models.isNotEmpty() || snapshot == null)
+            .apply { if (grouped) setGroup(GROUP).setGroupSummary(true) }
+            .setOngoing(active.isNotEmpty() || models.isNotEmpty() || snapshot == null)
             .setContentIntent(open(null, false))
             .addAction(android.R.drawable.ic_media_pause, "Pause chapters", control(null, "pause"))
             .addAction(android.R.drawable.ic_menu_view, "Logs", open(null, true)).build()
@@ -162,7 +177,7 @@ internal class TranslationNotifications(private val context: Context) {
         }
     }
 
-    fun publish(snapshot: TranslationNotificationSnapshot, standaloneSummary: Boolean) {
+    fun publish(snapshot: TranslationNotificationSnapshot) {
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled() ||
             manager.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE
         ) {
@@ -173,14 +188,12 @@ internal class TranslationNotifications(private val context: Context) {
         cards.forEach { (tag, notification) -> manager.notify(tag, CHILD_ID, notification) }
         visible.clear()
         visible.addAll(cards.keys)
-        if (standaloneSummary) {
-            if (cards.isEmpty()) {
-                manager.cancel(MODEL_SUMMARY_TAG, SUMMARY_ID)
-            } else {
-                manager.notify(MODEL_SUMMARY_TAG, SUMMARY_ID, summary(snapshot))
-            }
-        } else {
+        // A group summary's removal also removes its children on Android. Keep this summary under
+        // the center's ownership across worker start/stop; remove it only after its cards are gone.
+        if (cards.isEmpty()) {
             manager.cancel(MODEL_SUMMARY_TAG, SUMMARY_ID)
+        } else {
+            manager.notify(MODEL_SUMMARY_TAG, SUMMARY_ID, summary(snapshot))
         }
     }
 

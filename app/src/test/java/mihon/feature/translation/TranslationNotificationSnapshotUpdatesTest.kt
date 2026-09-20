@@ -2,6 +2,8 @@ package mihon.feature.translation
 
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -9,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import mihon.feature.translation.ocr.PaddleModelState
 import mihon.feature.translation.ocr.PaddleModelStatus
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.translation.model.PaddleProfile
 import tachiyomi.domain.translation.model.TranslationJob
@@ -20,6 +23,42 @@ import tachiyomi.domain.translation.model.TranslationSettings
 import tachiyomi.domain.translation.model.TranslationStage
 
 class TranslationNotificationSnapshotUpdatesTest {
+    @Test
+    fun `stopped worker cards follow durable cancellation and removal without adding unrelated jobs`() {
+        val stopped = snapshot(TranslationJobState.PAUSED, saved = 1)
+        val cancelled = stopped.jobs.single().copy(state = TranslationJobState.CANCELLED, message = "Cancelled")
+        val unrelated = cancelled.copy(id = "unrelated", state = TranslationJobState.TRANSLATING)
+
+        assertEquals(listOf(cancelled), stopped.withLatestJobs(listOf(unrelated, cancelled)).jobs)
+        assertEquals(emptyList<TranslationJob>(), stopped.withLatestJobs(listOf(unrelated)).jobs)
+    }
+
+    @Test
+    fun `durable cancellation bypasses pending progress after the worker stops`() = runTest {
+        val stopped = snapshot(TranslationJobState.PAUSED, saved = 1)
+        val durable = MutableStateFlow(stopped.jobs)
+        val published = mutableListOf<Pair<Long, TranslationNotificationSnapshot>>()
+        val collector = backgroundScope.launch {
+            combine(flowOf(stopped), durable) { snapshot, jobs ->
+                snapshot.withLatestJobs(jobs)
+            }.notificationUpdates(clock = { testScheduler.currentTime }) { it.stateKey }.collect {
+                published += testScheduler.currentTime to it
+            }
+        }
+        runCurrent()
+        advanceTimeBy(100)
+        durable.value = listOf(stopped.jobs.single().copy(state = TranslationJobState.CANCELLED))
+        runCurrent()
+        assertEquals(listOf(0L, 100L), published.map { it.first })
+        assertEquals(TranslationJobState.CANCELLED, published.last().second.jobs.single().state)
+        advanceTimeBy(100)
+        durable.value = emptyList()
+        runCurrent()
+        assertEquals(200L, published.last().first)
+        assertTrue(published.last().second.jobs.isEmpty())
+        collector.cancelAndJoin()
+    }
+
     @Test
     fun `routine subprocess churn is bounded and final saved progress reaches both publishers`() = runTest {
         val acquire = operation("acquire", TranslationStage.ACQUISITION)

@@ -9,7 +9,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonObject
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -386,7 +389,7 @@ class TranslationDiagnosticsStore internal constructor(private val directory: Fi
                     }
                     if (name == "metadata.json") {
                         require(target.length() <= MAX_METADATA_BYTES) { "Imported capture metadata is too large" }
-                        val value = json.decodeFromString<CaptureMetadata>(target.readText())
+                        val value = decodeImportedMetadata(target.readText())
                         require(value.id == sourceId) { "Capture metadata identity mismatch" }
                         metadata[sourceId] = value
                     }
@@ -506,6 +509,24 @@ class TranslationDiagnosticsStore internal constructor(private val directory: Fi
         captureNotes = metadata.captureNotes.map { DiagnosticRedactor.bodyText(it) },
         exportPolicy = SANITIZED_CAPTURE_POLICY,
     )
+
+    private fun decodeImportedMetadata(sanitized: String): CaptureMetadata {
+        val fields = json.parseToJsonElement(sanitized).jsonObject.toMutableMap()
+        listOf("requestHeaders", "responseHeaders").forEach { name ->
+            val headers = fields[name] ?: return@forEach
+            require(headers is JsonObject) { "Imported capture headers must be an object" }
+            // The body sanitizer represents credential headers as omission objects, including
+            // in our own exports. Restore only the typed header schema after sanitization;
+            // never turn an omission marker or an unexpected structured value into visible text.
+            val strings = headers.mapValues { (_, value) ->
+                (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "[redacted]"
+            }
+            fields[name] = JsonObject(
+                DiagnosticRedactor.headers(strings).mapValues { (_, value) -> JsonPrimitive(value) },
+            )
+        }
+        return json.decodeFromJsonElement(JsonObject(fields))
+    }
 
     private fun sanitizeCopy(input: InputStream, output: OutputStream): CaptureSanitization {
         var summary: CaptureSanitization? = null

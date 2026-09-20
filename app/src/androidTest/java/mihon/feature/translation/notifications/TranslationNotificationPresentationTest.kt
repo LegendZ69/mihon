@@ -9,6 +9,8 @@ import mihon.feature.translation.TranslationNotifications
 import mihon.feature.translation.ocr.PaddleModelState
 import mihon.feature.translation.ocr.PaddleModelStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,6 +25,17 @@ import tachiyomi.domain.translation.model.TranslationStage
 
 @RunWith(AndroidJUnit4::class)
 class TranslationNotificationPresentationTest {
+    @Test
+    fun foregroundNotificationCannotRemoveChapterAndModelGroupChildrenWhenCancelled() {
+        val publisher = TranslationNotifications(ApplicationProvider.getApplicationContext<Context>())
+        val snapshot =
+            TranslationNotificationSnapshot(listOf(job("active", TranslationJobState.TRANSLATING)), emptyList(), 2)
+        val foreground = publisher.foreground(snapshot)
+        assertNull(foreground.group)
+        assertFalse(foreground.flags and Notification.FLAG_GROUP_SUMMARY != 0)
+        assertTrue(publisher.cards(snapshot).values.all { it.group != null })
+    }
+
     @Test
     fun chapterAndDownloadCardsShareTheLimitAndReportDistinctProgressUnits() {
         val publisher = TranslationNotifications(ApplicationProvider.getApplicationContext<Context>())

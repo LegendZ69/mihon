@@ -42,6 +42,83 @@ class TranslationCaptureBudgetTest {
     private val limit = 1024L * 1024
 
     @Test
+    fun `authenticated capture exports restore sanitized header markers without losing safe headers`() = runBlocking {
+        val source = TranslationDiagnosticsStore(File(directory, "authenticated-source"))
+        val capture = source.start("source-job", null, "generateContent", settings)
+        source.finish(
+            capture,
+            capture.metadata.copy(
+                completedAt = 17,
+                requestHeaders = mapOf(
+                    "Authorization" to "Bearer historical-oauth-secret",
+                    "X-Api-Key" to "historical-api-secret",
+                    "Accept" to "application/json",
+                ),
+                responseHeaders = mapOf("Content-Type" to "application/json", "Set-Cookie" to "historical-cookie"),
+            ),
+        )
+        val exported = ByteArrayOutputStream().also { source.export(listOf(capture.metadata.id), it) }.toByteArray()
+        ZipInputStream(ByteArrayInputStream(exported)).use { zip ->
+            assertTrue(zip.nextEntry.name.endsWith("metadata.json"))
+            val metadata = zip.readBytes().decodeToString()
+            listOf("historical-oauth-secret", "historical-api-secret", "historical-cookie").forEach {
+                assertFalse(metadata.contains(it))
+            }
+            val headers = kotlinx.serialization.json.Json.parseToJsonElement(metadata)
+                .jsonObject.getValue("requestHeaders").jsonObject
+            assertEquals(
+                "credential",
+                headers.getValue("Authorization").jsonObject.getValue("reason").jsonPrimitive.content,
+            )
+        }
+        val destination = TranslationDiagnosticsStore(File(directory, "authenticated-restored"))
+        destination.importArchive(ByteArrayInputStream(exported), mapOf("source-job" to "target-job"), settings)
+        val restored = destination.list().single()
+        assertEquals("target-job", restored.jobId)
+        assertEquals(
+            mapOf("Authorization" to "[redacted]", "X-Api-Key" to "[redacted]", "Accept" to "application/json"),
+            restored.requestHeaders,
+        )
+        assertEquals(
+            mapOf("Content-Type" to "application/json", "Set-Cookie" to "[redacted]"),
+            restored.responseHeaders,
+        )
+        assertEquals("COMPLETED", restored.state)
+        val reexported = ByteArrayOutputStream().also { destination.export(listOf(restored.id), it) }.toByteArray()
+        val second = TranslationDiagnosticsStore(File(directory, "authenticated-restored-again"))
+        second.importArchive(ByteArrayInputStream(reexported), mapOf("target-job" to "second-job"), settings)
+        assertEquals(restored.requestHeaders, second.list().single().requestHeaders)
+        assertEquals(restored.responseHeaders, second.list().single().responseHeaders)
+    }
+
+    @Test
+    fun `legacy capture metadata never promotes structured header values to visible strings`() = runBlocking {
+        val id = "12345678-1234-1234-1234-123456789abc"
+        val metadata = """{"id":"$id","jobId":"source","batchId":null,"operation":"generateContent",
+            "completedAt":17,"state":"COMPLETED",
+            "requestHeaders":{"Authorization":{"_omitted":true,"reason":"credential","encodedBytes":12},
+                "Accept":"application/json"},
+            "responseHeaders":{"Content-Type":{"unexpected":"never-render-this-value"},
+                "X-Api-Key":{"_omitted":true,"reason":"credential","encodedBytes":10}}}
+        """.trimIndent()
+        val payload = ByteArrayOutputStream().also { bytes ->
+            java.util.zip.ZipOutputStream(bytes).use { zip ->
+                zip.putNextEntry(java.util.zip.ZipEntry("$id/metadata.json"))
+                zip.write(metadata.toByteArray())
+                zip.closeEntry()
+            }
+        }.toByteArray()
+        val destination = TranslationDiagnosticsStore(File(directory, "legacy-header-markers"))
+        destination.importArchive(ByteArrayInputStream(payload), mapOf("source" to "target"), settings)
+        val restored = destination.list().single()
+        assertEquals(mapOf("Authorization" to "[redacted]", "Accept" to "application/json"), restored.requestHeaders)
+        assertEquals(mapOf("Content-Type" to "[redacted]", "X-Api-Key" to "[redacted]"), restored.responseHeaders)
+        assertFalse(
+            File(destination.directoryFor(restored.id), "metadata.json").readText().contains("never-render-this-value"),
+        )
+    }
+
+    @Test
     fun `import recomputes incomplete body status instead of trusting archived success metadata`() = runBlocking {
         val id = "12345678-1234-1234-1234-123456789abc"
         val metadata = CaptureMetadata(

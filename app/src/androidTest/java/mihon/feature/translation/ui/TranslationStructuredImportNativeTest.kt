@@ -104,6 +104,12 @@ class TranslationStructuredImportNativeTest {
                 reveal("Custom replacement") { actions("Custom replacement").isNotEmpty() }
                 val custom = actions("Custom replacement").first()
                 assertTrue(performTargetAction(custom, AccessibilityNodeInfo.ACTION_CLICK))
+                // Compose publishes the replacement field after accepting the chip action.
+                // Scrolling before that publication can move the field out of the viewport
+                // before its editable semantics arrive (observed on K90).
+                await("System replacement publishes its editable semantics before scrolling") {
+                    nodes().any { it.isEditable && labelled(it, "System task wording") }
+                }
                 reveal("System task wording") { editors("System task wording").isNotEmpty() }
                 val valid = "Native validation: preserve dialogue and use {{target_language}}."
                 setPrompt(valid)

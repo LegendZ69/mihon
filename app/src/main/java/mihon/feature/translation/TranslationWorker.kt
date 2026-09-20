@@ -119,10 +119,10 @@ class TranslationWorker(context: Context, parameters: WorkerParameters) : Corout
         Result.retry()
     }
 
-    private fun foreground(message: String): ForegroundInfo = foregroundInfo(publisher.summary(null, message))
+    private fun foreground(message: String): ForegroundInfo = foregroundInfo(publisher.foreground(null, message))
     private fun foreground(
         snapshot: TranslationNotificationSnapshot,
-    ): ForegroundInfo = foregroundInfo(publisher.summary(notificationCenter.withModels(snapshot)))
+    ): ForegroundInfo = foregroundInfo(publisher.foreground(notificationCenter.withModels(snapshot)))
     private fun foregroundInfo(notification: android.app.Notification) = ForegroundInfo(
         TranslationNotifications.SUMMARY_ID,
         notification,
