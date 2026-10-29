@@ -1,16 +1,22 @@
 package ca.mpreg.webgpuviewer.viewer
 
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.webgpu.GPUColor
 import androidx.webgpu.GPUCommandEncoder
@@ -31,25 +37,28 @@ import ca.mpreg.webgpuviewer.draw.clear
 import ca.mpreg.webgpuviewer.draw.rect
 import ca.mpreg.webgpuviewer.draw.text
 import ca.mpreg.webgpuviewer.orZero
-import ca.mpreg.webgpuviewer.renderer.beginRenderPassWithColorView
-import ca.mpreg.webgpuviewer.renderer.endAndClose
 import ca.mpreg.webgpuviewer.renderer.Image
 import ca.mpreg.webgpuviewer.renderer.ImageOverlay
-import ca.mpreg.webgpuviewer.renderer.overlayPass
 import ca.mpreg.webgpuviewer.renderer.RenderPage
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
+import ca.mpreg.webgpuviewer.renderer.endAndRelease
+import ca.mpreg.webgpuviewer.renderer.overlayPass
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
+import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * A page in the viewer, with shared transform (x, y, scale), pan/zoom-to-fit bounds, and
@@ -142,12 +151,11 @@ open class ImagePage {
         /** Draws this page's content. Use [rect]/[circle]/[text] to draw into the open pass. */
         open fun render(dst: GPUTexture, x: Float, y: Float, scale: Float) {}
 
-        @Volatile
-        private var _renderVersion: Int = 0
+        private val _renderVersion = AtomicInteger()
 
         /** Bumped by [invalidate], so a page turn sees the drawn content change. */
         override val frameVersion: Int
-            get() = _renderVersion
+            get() = _renderVersion.get()
 
         /**
          * As [ImagePage.invalidate], bumping [frameVersion] so a page turn in flight re-seeds its
@@ -155,7 +163,7 @@ open class ImagePage {
          * otherwise freeze for the length of the turn.
          */
         override fun invalidate() {
-            _renderVersion++
+            _renderVersion.incrementAndGet()
             super.invalidate()
         }
 
@@ -269,18 +277,19 @@ open class ImagePage {
             val clearValue =
                 backgroundColor?.let { argbToGPUColor(it) } ?: GPUColor(0.0, 0.0, 0.0, 0.0)
 
-            val openedPass = encoder.beginRenderPassWithColorView(dst) { view ->
+            val targetView = dst.createView()
+            val openedPass = encoder.beginRenderPass(
                 GPURenderPassDescriptor(
                     colorAttachments = arrayOf(
                         GPURenderPassColorAttachment(
-                            view = view,
+                            view = targetView,
                             loadOp = if (clear) LoadOp.Clear else LoadOp.Load,
                             storeOp = StoreOp.Store,
                             clearValue = clearValue
                         )
                     )
                 )
-            }
+            )
             pass = openedPass
             passFormat = dst.format
             try {
@@ -292,7 +301,7 @@ open class ImagePage {
                 }
                 render(dst, x, y, scale)
             } finally {
-                openedPass.endAndClose()
+                openedPass.endAndRelease(targetView)
             }
         }
     }
@@ -341,22 +350,15 @@ open class ImagePage {
             }
         }
 
-        /** Animated from the start - no separate [startAnimationLoop] call needed. */
-        constructor(frames: List<Pair<Image, Int>>) : this(frames.firstOrNull()?.first) {
-            startAnimationLoop(frames)
-        }
-
         /** If true, this page owns its image and will clean it up. If false, it's borrowed - see
          *  [ImageSpread], which composes existing pages without taking ownership of their images. */
         var ownsImage: Boolean = true
 
         /**
          * When false, this page skips [ca.mpreg.webgpuviewer.renderer.TileRenderer]'s tile cache
-         * entirely and its fast path renders through [renderPage] with `linear = false` instead of
-         * the default `linear = true` - for content not worth either path's extra correctness or
-         * sharpness, such as an app-drawn transition/error bitmap. A `var`, not a `val`, so
-         * [ImageSpread] can override it to fan a set-through to both sides instead of just holding
-         * its own copy.
+         * and draws straight from its image - for content that changes too often to tile (an
+         * animation, a progressive preview) or isn't worth it (an app-drawn bitmap). A `var`, not
+         * a `val`, so [ImageSpread] can fan a set-through to both sides.
          */
         open var highQuality: Boolean = true
 
@@ -386,21 +388,31 @@ open class ImagePage {
 
         // Written by the animation loop on its own dispatcher, read by the render thread.
         @Volatile
-        private var frames: List<Pair<Image, Int>>? = null
-
-        @Volatile
         private var currentFrameImage: Image? = null
 
-        /** True while an animation frame loop owns [currentImage]. The tile cache skips animated pages. */
-        override val isAnimated: Boolean
-            get() = frames != null
+        /** The image [image] swaps with while animating; this page's own. Under this monitor. */
+        private var backImage: Image? = null
 
-        @Volatile
-        private var _frameVersion: Int = 0
+        // Bumped by each [animate], so a loop it replaced can't swap or keep a back image.
+        private var animationGeneration = 0
+
+        // Wakes an animation paused off screen.
+        private val shown = Channel<Unit>(Channel.CONFLATED)
+
+        override fun cameOnScreen() {
+            super.cameOnScreen()
+            shown.trySend(Unit)
+        }
+
+        private val _frameVersion = AtomicInteger()
 
         /** Incremented each time the animation frame changes. Used by the render cache to detect stale frames. */
         override val frameVersion: Int
-            get() = _frameVersion
+            get() = _frameVersion.get() + contentVersion
+
+        /** Uploads into the image(s) so far; unlike [frameVersion], a fade or redraw leaves it. */
+        open val contentVersion: Int
+            get() = image?.contentVersion ?: 0
 
         /** Current image for rendering (may change during animation) */
         open val currentImage: Image?
@@ -437,33 +449,130 @@ open class ImagePage {
 
         /** As [ImagePage.invalidate], over the same [frameVersion] the animation loop drives. */
         override fun invalidate() {
-            _frameVersion++
+            _frameVersion.incrementAndGet()
             super.invalidate()
         }
 
+        /**
+         * Plays an animation from [image], its frame 0, shown for [firstDuration] ms. [next]
+         * gives each frame after it in turn, or null to end on the one shown - looping is its
+         * to do. [release] runs once the animation is done with.
+         *
+         * Two images take turns: the next frame uploads into the hidden one while the other
+         * shows, so a frame is never seen half-written and swaps in on time. Holds its frame
+         * while off screen.
+         */
         @Synchronized
-        fun startAnimationLoop(frames: List<Pair<Image, Int>>) {
-            // Nothing cancels the loop twice, so one started after cleanup holds every frame.
-            if (destroyed) return
-
+        fun animate(
+            firstDuration: Int,
+            release: () -> Unit = {},
+            next: suspend () -> AnimationFrame?,
+        ) {
+            if (destroyed || image == null) {
+                runRelease(release)
+                return
+            }
             animationLoop?.cancel()
-            this.frames = frames
-            currentFrameImage = frames.firstOrNull()?.first
-
-            // Use the page's scope if available, otherwise use the shared background scope
-            val loopScope = scope ?: cleanupScope
-            animationLoop = loopScope.launch {
-                var frameIndex = 0
-                while (true) {
-                    this@ImageSingle.frames?.getOrNull(frameIndex)?.let { (img, duration) ->
-                        currentFrameImage = img
-                        // Keeps running off screen - frames stay in step with their durations,
-                        // and invalidate() asks for a redraw only while there is one to ask for.
-                        invalidate()
-                        delay(duration.coerceAtLeast(MIN_FRAME_MILLIS).milliseconds)
-                    } ?: break
-                    frameIndex = (frameIndex + 1) % (this@ImageSingle.frames?.size ?: 1)
+            // The replaced loop's back image is its own; this one starts again from [image].
+            backImage?.let(::releaseImage)
+            backImage = null
+            currentFrameImage = null
+            val generation = ++animationGeneration
+            // A tile grid would be cut again for every frame.
+            highQuality = false
+            animationLoop = (scope ?: cleanupScope).launch {
+                try {
+                    play(next, firstDuration, generation)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Ends on the frame shown: the page's scope has no handler.
+                    Log.w("ImagePage", "Animation stopped", e)
+                } finally {
+                    runRelease(release)
                 }
+            }
+        }
+
+        // The host's, run where nothing would catch a throw.
+        private fun runRelease(release: () -> Unit) {
+            try {
+                release()
+            } catch (e: Exception) {
+                Log.e("ImagePage", "Animation release failed", e)
+            }
+        }
+
+        /** Frees [img] off this page: its HDR claim now, its textures on the render thread. */
+        private fun releaseImage(img: Image) {
+            img.releaseHdr()
+            cleanupScope.launch {
+                try {
+                    WebGpuRenderer.onDispatcher { img.cleanup() }
+                } catch (e: Exception) {
+                    Log.e("ImagePage", "Cleanup error", e)
+                }
+            }
+        }
+
+        private suspend fun play(
+            next: suspend () -> AnimationFrame?,
+            firstDuration: Int,
+            generation: Int,
+        ) {
+            var front = image ?: return
+            var back: Image? = null
+            var shownAt = SystemClock.uptimeMillis()
+            var showFor = firstDuration.coerceAtLeast(MIN_FRAME_MILLIS).toLong()
+
+            while (true) {
+                if (!isOnScreen) {
+                    while (!isOnScreen) shown.receive()
+                    shownAt = SystemClock.uptimeMillis()
+                }
+
+                val frame = next() ?: return
+                val duration = frame.duration.coerceAtLeast(MIN_FRAME_MILLIS).toLong()
+                val due = shownAt + showFor
+                try {
+                    // Late frames still show, as soon as they're ready: a decode slower than the
+                    // frame rate would never catch up by skipping.
+                    val target = back
+                    if (target == null) {
+                        val made = front.twin(frame.pixels)
+                        val kept = synchronized(this) {
+                            val live = !destroyed && generation == animationGeneration
+                            if (live) backImage = made
+                            live
+                        }
+                        if (!kept) {
+                            releaseImage(made)
+                            return
+                        }
+                        back = made
+                    } else if (!target.update(frame.pixels)) {
+                        return
+                    }
+                } finally {
+                    frame.close()
+                }
+
+                val wait = due - SystemClock.uptimeMillis()
+                if (wait > 0) delay(wait)
+
+                val shown = back
+                synchronized(this) {
+                    if (destroyed || generation != animationGeneration) return
+                    currentFrameImage = shown
+                }
+                invalidate()
+                back = front
+                front = shown
+
+                // Behind by more than a frame: resync rather than race to catch up.
+                val now = SystemClock.uptimeMillis()
+                shownAt = if (now - due > duration) now else due
+                showFor = duration
             }
         }
 
@@ -480,68 +589,76 @@ open class ImagePage {
             // Clears and draws in the same pass, rather than a separate clear pass first. No
             // stencil attachment - this fallback never needs TileRenderer's masking, unlike the
             // overrides below that bypass it entirely.
-            val pass = encoder.beginRenderPassWithColorView(dst) { view ->
+            val targetView = dst.createView()
+            val pass = encoder.beginRenderPass(
                 GPURenderPassDescriptor(
                     colorAttachments = arrayOf(
                         GPURenderPassColorAttachment(
-                            view = view,
+                            view = targetView,
                             loadOp = LoadOp.Clear,
                             storeOp = StoreOp.Store,
                             clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
                         )
                     )
                 )
-            }
+            )
             try {
-                renderPage(pass, dst, x, y, scale, linear = false, masked = false)
+                renderPage(pass, dst, x, y, scale, masked = false)
             } finally {
-                pass.endAndClose()
+                pass.endAndRelease(targetView)
             }
         }
 
         /** Opens a `LoadOp.Clear` pass on [dst], with a stencil attachment for [TileRenderer]'s masking. */
         private fun beginLivePass(
             encoder: GPUCommandEncoder, dst: GPUTexture, tiles: TileRenderer
-        ) = encoder.beginRenderPassWithColorView(dst) { view ->
-            GPURenderPassDescriptor(
-                colorAttachments = arrayOf(
-                    GPURenderPassColorAttachment(
-                        view = view,
-                        loadOp = LoadOp.Clear,
-                        storeOp = StoreOp.Store,
-                        clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
-                    )
-                ), depthStencilAttachment = GPURenderPassDepthStencilAttachment(
-                    view = tiles.stencilViewFor(dst),
-                    stencilLoadOp = LoadOp.Clear,
-                    stencilStoreOp = StoreOp.Discard,
-                    stencilClearValue = 0,
-                )
-            )
-        }
-
-        /** Opens a `LoadOp.Clear` pass on [tex], no stencil attachment - a transition's cache is never masked. */
-        private fun beginCachePass(encoder: GPUCommandEncoder, tex: GPUTexture) =
-            encoder.beginRenderPassWithColorView(tex) { view ->
+        ): GPURenderPassEncoder {
+            val targetView = dst.createView()
+            // The pass holds its own reference to its attachment, so ours can go at once.
+            return encoder.beginRenderPass(
                 GPURenderPassDescriptor(
                     colorAttachments = arrayOf(
                         GPURenderPassColorAttachment(
-                            view = view,
+                            view = targetView,
+                            loadOp = LoadOp.Clear,
+                            storeOp = StoreOp.Store,
+                            clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
+                        )
+                    ), depthStencilAttachment = GPURenderPassDepthStencilAttachment(
+                        view = tiles.stencilViewFor(dst),
+                        stencilLoadOp = LoadOp.Clear,
+                        stencilStoreOp = StoreOp.Discard,
+                        stencilClearValue = 0,
+                    )
+                )
+            ).also { targetView.close() }
+        }
+
+        /** Opens a `LoadOp.Clear` pass on [tex], no stencil attachment - a transition's cache is never masked. */
+        private fun beginCachePass(
+            encoder: GPUCommandEncoder,
+            tex: GPUTexture
+        ): GPURenderPassEncoder {
+            val targetView = tex.createView()
+            return encoder.beginRenderPass(
+                GPURenderPassDescriptor(
+                    colorAttachments = arrayOf(
+                        GPURenderPassColorAttachment(
+                            view = targetView,
                             loadOp = LoadOp.Clear,
                             storeOp = StoreOp.Store,
                             clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
                         )
                     )
                 )
-            }
+            ).also { targetView.close() }
+        }
 
         /**
-         * As [ImagePage.drawLive]. Animated frames always want the fast path regardless of
-         * [highQuality] (never worth a tile cache that would just churn every frame); a
-         * non-[highQuality], non-animated page falls back to the plain [renderWith] (via `super`);
-         * everything else goes through the tile cache, backfilling with [renderPage] wherever it
-         * isn't covered yet. Opens its own pass (with a stencil attachment, for [TileRenderer]'s
-         * masking) rather than sharing one from the caller - see [Render] for why that split exists.
+         * As [ImagePage.drawLive]: through the tile cache when [highQuality], backfilling with
+         * [renderPage] wherever it isn't covered yet, else [renderPage] alone. Opens its own pass
+         * (with a stencil attachment, for [TileRenderer]'s masking) rather than sharing one from
+         * the caller - see [Render] for why that split exists.
          */
         override fun drawLive(
             encoder: GPUCommandEncoder, dst: GPUTexture, tiles: TileRenderer
@@ -554,22 +671,6 @@ open class ImagePage {
         private fun drawLiveContent(
             encoder: GPUCommandEncoder, dst: GPUTexture, tiles: TileRenderer
         ): Boolean {
-            if (isAnimated) {
-                val pass = beginLivePass(encoder, dst, tiles)
-                try {
-                    renderBackground(pass, dst, 0f, 0f, 1f)
-                    renderPage(pass, dst, 0f, 0f, 1f)
-                } finally {
-                    pass.endAndClose()
-                }
-                return false
-            }
-
-            if (!highQuality) {
-                renderContent(encoder, 0f, 0f, 1f, dst)
-                return false
-            }
-
             val pass = beginLivePass(encoder, dst, tiles)
             try {
                 // Background always drawn live first (its fades are position-dependent, never
@@ -578,7 +679,7 @@ open class ImagePage {
                 // renderPage then only shades what's left uncovered instead of the whole
                 // viewport, since tiles.draw() already produced the right pixel wherever it drew.
                 renderBackground(pass, dst, 0f, 0f, 1f)
-                val covered = tiles.draw(pass, this, dst, 0f, 0f, 1f)
+                val covered = highQuality && tiles.draw(pass, this, dst, 0f, 0f, 1f)
                 if (!covered) {
                     renderPage(pass, dst, 0f, 0f, 1f)
                 }
@@ -594,14 +695,13 @@ open class ImagePage {
                 }
                 return covered
             } finally {
-                pass.endAndClose()
+                pass.endAndRelease()
             }
         }
 
         /**
-         * As [drawLive], seeding a transition's cache slot instead of the screen - same
-         * isAnimated/highQuality precedence, but never with a stencil attachment (a transition's
-         * cache is never stencil-masked either way).
+         * As [drawLive], seeding a transition's cache slot instead of the screen - never with a
+         * stencil attachment (a transition's cache is never stencil-masked either way).
          */
         override fun renderCacheSeed(
             encoder: GPUCommandEncoder, tex: GPUTexture, tiles: TileRenderer
@@ -613,38 +713,10 @@ open class ImagePage {
         private fun renderCacheContent(
             encoder: GPUCommandEncoder, tex: GPUTexture, tiles: TileRenderer
         ) {
-            if (isAnimated) {
-                val pass = beginCachePass(encoder, tex)
-                try {
-                    renderPage(pass, tex, 0f, 0f, 1f, masked = false)
-                    if (fade < 1f) {
-                        fadeRect(tex)?.let {
-                            drawFade(
-                                pass,
-                                tex.format,
-                                it[0],
-                                it[1],
-                                it[2],
-                                it[3],
-                                false
-                            )
-                        }
-                    }
-                } finally {
-                    pass.endAndClose()
-                }
-                return
-            }
-
-            if (!highQuality) {
-                renderContent(encoder, 0f, 0f, 1f, tex)
-                return
-            }
-
             val pass = beginCachePass(encoder, tex)
             try {
                 renderPage(pass, tex, 0f, 0f, 1f, masked = false)
-                tiles.blitAvailableTiles(pass, this, tex)
+                if (highQuality) tiles.blitAvailableTiles(pass, this, tex)
                 // A fade re-seeds the cache every frame (frameVersion), which is what lets a
                 // page fade in mid-turn at all.
                 if (fade < 1f) {
@@ -661,12 +733,12 @@ open class ImagePage {
                     }
                 }
             } finally {
-                pass.endAndClose()
+                pass.endAndRelease()
             }
         }
 
         override fun newlyAvailableTileKeys(tiles: TileRenderer, tex: GPUTexture): Set<Long>? =
-            if (!highQuality || isAnimated) null else tiles.availableTileKeys(this, tex)
+            if (!highQuality) null else tiles.availableTileKeys(this, tex)
 
         override fun renderIntoCache(
             encoder: GPUCommandEncoder,
@@ -674,26 +746,28 @@ open class ImagePage {
             tiles: TileRenderer,
             identityMatches: Boolean
         ) {
+            // Overlays draw over the cached tiles, so incremental blits would cover them.
             if (!identityMatches || hasOverlay) {
                 renderCacheSeed(encoder, tex, tiles)
                 return
             }
-            val pass = encoder.beginRenderPassWithColorView(tex) { view ->
+            val targetView = tex.createView()
+            val pass = encoder.beginRenderPass(
                 GPURenderPassDescriptor(
                     colorAttachments = arrayOf(
                         GPURenderPassColorAttachment(
-                            view = view,
+                            view = targetView,
                             loadOp = LoadOp.Load,
                             storeOp = StoreOp.Store,
                             clearValue = GPUColor(0.0, 0.0, 0.0, 0.0)
                         )
                     )
                 )
-            }
+            )
             try {
                 tiles.blitAvailableTiles(pass, this, tex)
             } finally {
-                pass.endAndClose()
+                pass.endAndRelease(targetView)
             }
         }
 
@@ -877,24 +951,14 @@ open class ImagePage {
             animationLoop?.cancel()
             animationLoop = null
 
-            // The HDR claim was taken when the image was built, so it goes back either way.
-            if (!ownsImage) {
-                frames?.forEach { it.first.releaseHdr() }
-                image?.releaseHdr()
-                frames = null
-                currentFrameImage = null
-                return
-            }
-
-            val framesToClean = frames
-            frames = null
+            // Made by [animate], so this page's whatever [ownsImage] says.
+            val back = backImage
+            backImage = null
             currentFrameImage = null
 
-            // [startAnimationLoop] takes any list, so [image] may not be among the frames.
-            val imagesToClean = when (framesToClean) {
-                null -> listOfNotNull(image)
-                else -> (framesToClean.map { it.first } + listOfNotNull(image)).distinct()
-            }
+            // The HDR claim was taken when the image was built, so it goes back either way.
+            if (!ownsImage) image?.releaseHdr()
+            val imagesToClean = listOfNotNull(image.takeIf { ownsImage }, back)
 
             // Before the launch, not inside it: work needing the render dispatcher is what kept
             // HDR on after the last HDR page was evicted.
@@ -923,13 +987,180 @@ open class ImagePage {
     }
 
     /**
+     * A page whose pixels are a composition, authored in page pixels in a [width] x [height] box.
+     *
+     * Stays live while in reach of the screen (recomposes, animates, takes touch). Changed frames upload as
+     * this page's [Image], so transitions, spreads, the render cache and pan draw it like a decoded page.
+     * See [ComposePageHost].
+     *
+     * [size] is resolved against the viewer: viewport, spread side and scrolling decide it; rotation changes it.
+     */
+    open class Compose(
+        val size: ComposePageSize = ComposePageSize.Auto,
+        background: Int? = null,
+        private val content: (@Composable BoxScope.() -> Unit)? = null,
+    ) : ImageSingle(null) {
+
+        /**
+         * The page's content, centred in a [width] x [height] box.
+         *
+         * Override instead of passing a lambda when it reads the subclass's own state: a constructor argument
+         * can't close over a subclass not yet built.
+         */
+        @Composable
+        open fun BoxScope.Content() {
+            content?.invoke(this)
+        }
+
+        /** Resolved [size]; zero until the host measures it, so the page is skipped until then. */
+        @Volatile
+        private var footprint: IntSize = when (size) {
+            is ComposePageSize.Of -> IntSize(size.width, size.height)
+            ComposePageSize.Auto, ComposePageSize.Wrap -> IntSize.Zero
+        }
+
+        override val width: Int get() = footprint.width
+        override val height: Int get() = footprint.height
+
+        /** Set by the host once it has measured [size] against the viewport. */
+        internal fun resize(value: IntSize) {
+            footprint = value
+        }
+
+        /** What the viewer letterboxes and fades toward around a page smaller than the screen. */
+        override val backgroundColor: Int? = background
+
+        /** The content redraws whenever it recomposes, so a tile grid would only ever churn. */
+        override var highQuality: Boolean = false
+
+        init {
+            // Chrome is drawn at the size it asked for, so there is nothing to zoom into and
+            // nothing to fit: unpinned, a card smaller than the viewport is magnified to fill it.
+            minScale = 1f
+            maxScale = 1f
+            homeScale = 1f
+        }
+
+        /** Last frame captured off the live overlay; null before the first. */
+        @Volatile
+        private var snapshot: Image? = null
+
+        /**
+         * Whether the viewer draws [snapshot] instead of the live overlay compositing the content.
+         *
+         * In motion the overlay would be a second layer on its own clock, out of step with the pages and
+         * unwarpable by a transition shader, so motion uses the snapshot.
+         *
+         * Set by the host as motion starts and ends; stays on until the window has drawn the content once, since a
+         * straight swap leaves the page blank for a traversal. Both draw the same pixels, so overlap is invisible.
+         *
+         * Read from the render thread, written on the main one.
+         */
+        @Volatile
+        var presenting: Boolean = true
+            internal set
+
+        /** Whether there is a frame to hand over to, so the overlay knows it may step aside. */
+        internal val hasSnapshot: Boolean get() = snapshot != null
+
+        /**
+         * The snapshot, always, even while the window also carries this page: overlap is invisible, and swapping
+         * leaves a blank frame at each handover (window awaits a traversal, surface awaits a redraw).
+         *
+         * Never [ImageSingle]'s own image: an inherited [animate] would drive [currentFrameImage], which this ignores.
+         */
+        override val currentImage: Image? get() = snapshot
+
+        /**
+         * Bumped per landed capture. Separate from the snapshot's: a resize restarts that from zero, and a version
+         * going backwards could match a stale transition cache entry.
+         */
+        override val contentVersion: Int get() = captures.get()
+
+        private val captures = AtomicInteger()
+
+        /** One capture at a time, so two can never race to replace [snapshot]. */
+        private val captureLock = Mutex()
+
+        /**
+         * Decoded from the start so transitions don't skip this page. Before [capture] runs there's no texture,
+         * and the page draws [backgroundColor] alone.
+         */
+        override val isDecoded: Boolean get() = true
+
+        /**
+         * Takes [pixels] ([size] RGBA8 off the live overlay) as the image drawn while moving.
+         *
+         * Updates in place when the size matches; otherwise a new image, the old one freed on the render thread
+         * behind frames still sampling it. If cleaned up meanwhile, whatever this made is freed instead.
+         */
+        internal suspend fun capture(pixels: ByteBuffer, size: IntSize) = captureLock.withLock {
+            if (destroyed || size.width <= 0 || size.height <= 0) return@withLock
+            // Gone with the surface, it took every texture with it: an upload now would write
+            // into freed memory, which segfaults rather than throwing.
+            if (!WebGpuRenderer.isAvailable) return@withLock
+
+            val existing = snapshot
+            if (existing != null && existing.width == size.width && existing.height == size.height) {
+                // False once cleanup has freed it part way.
+                if (existing.update(pixels)) {
+                    captures.incrementAndGet()
+                    invalidate()
+                }
+                return@withLock
+            }
+
+            val image = Image(size.width, size.height)
+            try {
+                image.update(pixels)
+            } catch (e: Throwable) {
+                free(image)
+                throw e
+            }
+            backgroundColor?.let { image.backgroundColor = it }
+            // Against [cleanup], which swaps [snapshot] out under the same lock: exactly one side
+            // frees each image.
+            val kept = synchronized(this) {
+                if (destroyed) false else {
+                    snapshot = image
+                    true
+                }
+            }
+            if (!kept) {
+                free(image)
+                return@withLock
+            }
+            if (existing != null) free(existing)
+            captures.incrementAndGet()
+            invalidate()
+        }
+
+        @Synchronized
+        override fun cleanup() {
+            super.cleanup()
+            val image = snapshot ?: return
+            snapshot = null
+            free(image)
+        }
+
+        private companion object {
+            /** Frees run here so they queue behind the frames that might still be reading them. */
+            val releases = CoroutineScope(WebGpuRenderer.dispatcher + SupervisorJob())
+
+            fun free(image: Image) {
+                releases.launch { if (WebGpuRenderer.isAvailable) image.cleanup() }
+            }
+        }
+    }
+
+    /**
      * Two pages drawn side by side, sharing one pan/zoom transform and one
      * [ca.mpreg.webgpuviewer.renderer.TileRenderer] grid, so the seam bakes into whichever tile
      * straddles it instead of meeting two independently-snapped layers. Either side may be null,
      * e.g. a cover with no partner.
      *
      * Composes existing pages rather than owning decoded images: drawing and animation delegate to
-     * whichever side is live via [ImageSingle.currentImage]/[isAnimated], so either can be an
+     * whichever side is live via [ImageSingle.currentImage], so either can be an
      * animated GIF independently. Never cleans up [left]/[right] - whoever built them owns that.
      *
      * A side may also be a [Render] page. It has no image to place, so it sits out [forEachImage]
@@ -944,12 +1175,23 @@ open class ImagePage {
         private val rightSingle: ImageSingle?
             get() = right as? ImageSingle
 
-        // Grows the shorter side to the taller one's height
+        /** Grows the shorter image side to the taller one's height; see [counted] for a composed one. */
         private fun sideScale(side: ImagePage?): Float {
             val h = side?.height ?: return 1f
-            val tallest = max(left?.height ?: 0, right?.height ?: 0)
-            return if (h <= 0 || tallest <= h) 1f else tallest.toFloat() / h
+            if (h <= 0) return 1f
+            if (side is Compose) {
+                // Footprint is half the screen in screen pixels; undoing the image's fit lands it there.
+                val partner = (if (side === left) right else left)?.takeIf { it !is Compose }
+                    ?: return 1f
+                val fit = fitInHalf(partner)
+                return if (fit > 0f) 1f / fit else 1f
+            }
+            // Image heights only, so a composed side never makes its partner grow.
+            val tallestImage = max(imageHeight(left), imageHeight(right))
+            return if (tallestImage <= h) 1f else tallestImage.toFloat() / h
         }
+
+        private fun imageHeight(side: ImagePage?): Int = if (side == null || side is Compose) 0 else side.height
 
         private val leftScale: Float
             get() = sideScale(left)
@@ -958,6 +1200,38 @@ open class ImagePage {
 
         private fun sideWidth(side: ImagePage?): Float =
             (side?.width ?: 0) * sideScale(side)
+
+        private val hasImageSide: Boolean
+            get() = (left != null && left !is Compose) || (right != null && right !is Compose)
+
+        /**
+         * Whether [side] takes part in this spread's layout. A composed side beside an image does not:
+         * the spread lays out, fits and pans by the image alone. Two composed sides both do.
+         */
+        private fun counted(side: ImagePage?): Boolean =
+            side != null && (side !is Compose || !hasImageSide)
+
+        private fun layoutWidth(side: ImagePage?): Float = if (counted(side)) sideWidth(side) else 0f
+
+        /**
+         * [side]'s x, y and scale as this spread draws it at [viewportWidth] ([forEachPlacedImage]'s arithmetic),
+         * or null if not a side of this one. [ComposePageHost] places a composed side's content by it.
+         */
+        internal fun sideTransform(side: ImagePage, viewportWidth: Float): FloatArray? {
+            val sideScale = when {
+                side === left -> leftScale
+                side === right -> rightScale
+                else -> return null
+            }
+            val seamOffset = (if (side === left) -0.5f else 0.5f) * side.width * sideScale
+            val offsetX = WebGpuRenderer.offsetX
+            val offsetY = WebGpuRenderer.offsetY
+            return floatArrayOf(
+                (x + seamOffset / viewportWidth + offsetX) / sideScale - offsetX,
+                (y + offsetY) / sideScale - offsetY,
+                scale * sideScale,
+            )
+        }
 
         /** Runs [action] for each present side, with its pixel offset from the seam. */
         private inline fun forEachSide(action: (side: ImagePage, offsetX: Float, scale: Float) -> Unit) {
@@ -972,11 +1246,11 @@ open class ImagePage {
                 rightSingle?.highQuality = value
             }
 
-        override val isAnimated: Boolean
-            get() = left?.isAnimated == true || right?.isAnimated == true
-
         override val frameVersion: Int
             get() = (left?.frameVersion ?: 0) + (right?.frameVersion ?: 0)
+
+        override val contentVersion: Int
+            get() = (leftSingle?.contentVersion ?: 0) + (rightSingle?.contentVersion ?: 0)
 
         /** No image of its own - [left]/[right] hold them, and [forEachImage] walks both. */
         override val currentImage: Image?
@@ -1043,6 +1317,11 @@ open class ImagePage {
             super.attach(parent, scope, onInvalidate)
             left?.attach(parent, scope, onInvalidate)
             right?.attach(parent, scope, onInvalidate)
+        }
+
+        override fun cameOnScreen() {
+            left?.cameOnScreen()
+            right?.cameOnScreen()
         }
 
         /** True when either side paints itself rather than blitting a decoded image. */
@@ -1156,15 +1435,18 @@ open class ImagePage {
         }
 
         override fun horizontalExtent(): Pair<Float, Float> =
-            sideWidth(left) to sideWidth(right)
+            layoutWidth(left) to layoutWidth(right)
 
-        /** Total width (sum of both sides' widths) */
+        /** Sum of the [counted] sides' widths. */
         override val width: Int
-            get() = (sideWidth(left) + sideWidth(right)).roundToInt()
+            get() = (layoutWidth(left) + layoutWidth(right)).roundToInt()
 
-        /** Total height (max of both sides' heights) */
+        /** Max of the [counted] sides' heights. */
         override val height: Int
-            get() = max(left?.height ?: 0, right?.height ?: 0)
+            get() = max(
+                if (counted(left)) left!!.height * leftScale else 0f,
+                if (counted(right)) right!!.height * rightScale else 0f,
+            ).roundToInt()
 
         /**
          * Visible width after trim. Inner edges are ignored - a seam is never trimmed - and a
@@ -1172,9 +1454,9 @@ open class ImagePage {
          */
         override val trimWidth: Int
             get() {
-                val leftW =
+                val leftW = if (!counted(left)) 0 else
                     leftSingle?.image?.let { it.width - (it.trim?.left ?: 0) } ?: left?.width ?: 0
-                val rightW =
+                val rightW = if (!counted(right)) 0 else
                     rightSingle?.image?.let { it.trim?.right ?: it.width } ?: right?.width ?: 0
                 return (leftW * leftScale + rightW * rightScale).roundToInt()
             }
@@ -1182,7 +1464,8 @@ open class ImagePage {
         /** Visible height after trim (max of trim heights) */
         override val trimHeight: Int
             get() = max(
-                (left?.trimHeight ?: 0) * leftScale, (right?.trimHeight ?: 0) * rightScale
+                if (counted(left)) left!!.trimHeight * leftScale else 0f,
+                if (counted(right)) right!!.trimHeight * rightScale else 0f,
             ).roundToInt()
 
         override val isHalfWidth: Boolean
@@ -1217,14 +1500,21 @@ open class ImagePage {
         }
 
         /**
-         * Each side fit to its own half independently, since the two can differ in size - unlike
-         * [ImagePage]'s default, which fits [width]/[height]'s combined span.
+         * Each [counted] side fit to its own half independently, since the two can differ in size -
+         * unlike [ImagePage]'s default, which fits [width]/[height]'s combined span.
          */
         override fun halfWidthScale(halfWidth: Float, parentHeight: Float): Float =
-            listOfNotNull(left, right).filter { it.width > 0 && it.height > 0 }
-                .minOfOrNull { side ->
-                    minOf(halfWidth / side.width, parentHeight / side.height)
-                }?.coerceAtLeast(0.01f) ?: 0.01f
+            // Composed sides alone are half-screen in screen pixels: 1:1, known before they have a size.
+            if (!hasImageSide) 1f else
+            listOfNotNull(left, right).filter { counted(it) && it.width > 0 && it.height > 0 }
+                .minOfOrNull { side -> minOf(halfWidth / side.width, parentHeight / side.height) }
+                ?.coerceAtLeast(0.01f) ?: 0.01f
+
+        /** [side]'s fit in half the viewport, as [halfWidthScale] takes it; 0 before a size. */
+        private fun fitInHalf(side: ImagePage): Float {
+            if (side.width <= 0 || side.height <= 0 || parentWidth <= 0f || parentHeight <= 0f) return 0f
+            return minOf(parentWidth / 2f / side.width, parentHeight / side.height)
+        }
     }
 
     companion object {
@@ -1255,9 +1545,6 @@ open class ImagePage {
     var destroyed = false
         private set
 
-    /** True while an animation frame loop owns the current frame. Only ever true for [Images]. */
-    open val isAnimated: Boolean get() = false
-
     /**
      * Incremented each time this page's drawn content changes - an animated [Images] frame, or a
      * [Render] page's [Render.invalidate]. Read by a transition to spot a stale cache slot.
@@ -1269,6 +1556,7 @@ open class ImagePage {
     var y: Float = 0f
 
     fun setPos(x: Float = this.x, y: Float = this.y, scale: Float = this.scale) {
+        if (!x.isFinite() || !y.isFinite() || !scale.isFinite() || scale <= 0f) return
         if (this.x == x && this.y == y && this.scale == scale) return
         this.x = x
         this.y = y
@@ -1555,6 +1843,14 @@ open class ImagePage {
      * viewer never fetches itself but which still need a scope to animate in and a way back to
      * the screen.
      */
+    /**
+     * Called as this page joins the drawn ones. Redraws, as any [invalidate] before this was
+     * dropped for not being on screen yet.
+     */
+    internal open fun cameOnScreen() {
+        onInvalidate?.invoke()
+    }
+
     internal open fun attach(
         parent: ImageViewerState, scope: CoroutineScope?, onInvalidate: () -> Unit
     ) {
@@ -1573,10 +1869,10 @@ open class ImagePage {
         if (isOnScreen) onInvalidate?.invoke()
     }
 
-    private val parentWidth: Float
+    protected val parentWidth: Float
         get() = parent?.width?.toFloat() ?: 0f
 
-    private val parentHeight: Float
+    protected val parentHeight: Float
         get() = parent?.viewportHeight ?: 0f
 
     /**
@@ -1762,11 +2058,13 @@ open class ImagePage {
         animateTo(targetScale = homeScale)
     }
 
+    /** [animationSpec] runs 0 to 1 over the move; the default springs. */
     fun animateTo(
         origin: Offset? = null,
         targetX: Float = homeX,
         targetY: Float = homeY,
         targetScale: Float = scale,
+        animationSpec: AnimationSpec<Float> = spring(stiffness = Spring.StiffnessMediumLow, visibilityThreshold = 0.002f),
     ) {
         animationJob?.cancel()
 
@@ -1801,17 +2099,18 @@ open class ImagePage {
             else -> targetY
         }
 
+        if (!scaleChanging && endX == startX && endY == startY) {
+            animationJob = null
+            return
+        }
+
         animationJob = scope?.launch {
             animationTargetX = endX
             animationTargetY = endY
             animationTargetScale = targetScale
             if (scaleChanging) isScaleAnimating = true
             try {
-                animate(
-                    0f, 1f, animationSpec = spring(
-                        stiffness = Spring.StiffnessMediumLow, visibilityThreshold = 0.002f
-                    )
-                ) { value, _ ->
+                animate(0f, 1f, animationSpec = animationSpec) { value, _ ->
                     val currentScale = startScale + (targetScale - startScale) * value
                     val c = if (scaleChanging) {
                         ((1 / currentScale - 1 / startScale) / diffEnd).fastCoerceIn(0f, 1f)
@@ -1830,6 +2129,8 @@ open class ImagePage {
                 animationTargetY = null
                 animationTargetScale = null
                 isScaleAnimating = false
+                // The last step drew with generation held off; settled, the tiles need a frame.
+                if (scaleChanging) onInvalidate?.invoke()
             }
         }
     }
@@ -1848,4 +2149,32 @@ open class ImagePage {
 
     /** Alias for cleanup() */
     fun destroy() = cleanup()
+}
+
+/**
+ * How an [ImagePage.Compose] page's footprint is decided. [ComposePageHost] re-resolves it as the viewer
+ * changes, so rotation or dual-page needs no rebuild.
+ */
+sealed interface ComposePageSize {
+
+    /**
+     * The whole slot where the viewer scrolls, the content's own size where it pages.
+     *
+     * A continuous viewer fits pages to viewport width, so self-sized content would be scaled up. Paged, a
+     * smaller page is cheaper to capture and not draggable ([ImagePage.minY]/[ImagePage.maxY] collapse).
+     */
+    data object Auto : ComposePageSize
+
+    /**
+     * Full width and the content's own height where the viewer scrolls, the content's own size where it pages.
+     *
+     * For chrome between pages, e.g. a chapter transition. Full width for the same reason as [Auto].
+     */
+    data object Wrap : ComposePageSize
+
+    /**
+     * Exactly this many page pixels, for chrome standing in for a page of known size (a spinner while decoding)
+     * so layout doesn't shift when the image arrives.
+     */
+    data class Of(val width: Int, val height: Int) : ComposePageSize
 }

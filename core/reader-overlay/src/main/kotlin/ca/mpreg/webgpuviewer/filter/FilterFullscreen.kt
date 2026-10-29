@@ -6,8 +6,10 @@ import androidx.webgpu.GPUBindGroupEntry
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPURenderPipeline
 import androidx.webgpu.GPUTextureView
+import ca.mpreg.webgpuviewer.renderer.FormatKeyed
 import ca.mpreg.webgpuviewer.renderer.Fullscreen
 import ca.mpreg.webgpuviewer.renderer.endAndRelease
+import ca.mpreg.webgpuviewer.renderer.groupLayout
 
 /**
  * A [Filter] that is one fragment pass over the whole frame - the shape every per-pixel filter
@@ -15,7 +17,7 @@ import ca.mpreg.webgpuviewer.renderer.endAndRelease
  *
  * Subclasses supply [code] (a `fs_main` taking [Fullscreen.VERTEX]'s `VertexOutput`) and
  * [entries] (its group 0 bindings). Bind groups are kept per source texture rather than for the last one only,
- * since [FilterChain] rotates its textures across frames and a single-entry cache would then
+ * since [FullscreenFilterChain] rotates its textures across frames and a single-entry cache would then
  * miss every frame; a filter whose own bindings change - a new LUT, say - calls [rebind].
  *
  * There is no blend state: the pass covers every pixel and replaces it, and the frame it reads
@@ -29,9 +31,10 @@ abstract class FilterFullscreen : Filter() {
      */
     protected abstract val code: String
 
-    protected open val pipeline: GPURenderPipeline by lazy {
-        Fullscreen.buildPipeline(code, outputFormat, label)
-    }
+    // Per format: [outputFormat] follows [Hdr.frameFormat], which an HDR toggle changes.
+    private val pipelines = FormatKeyed { format -> Fullscreen.buildPipeline(code, format, label) }
+
+    protected open val pipeline: GPURenderPipeline get() = pipelines[outputFormat]
 
     /** Group 0 bindings for this pass, with the chain's current input as [src]. */
     protected abstract fun entries(src: GPUTextureView): Array<GPUBindGroupEntry>
@@ -42,15 +45,28 @@ abstract class FilterFullscreen : Filter() {
     private val bindGroups = arrayOfNulls<GPUBindGroup>(CACHED_BIND_GROUPS)
     private var nextBindGroup = 0
 
-    /** Drop the cached bind groups, for a filter whose own bindings have changed. */
-    protected fun rebind() {
+    // The pipeline the cached groups were built against - an auto layout is per pipeline.
+    private var boundPipeline: GPURenderPipeline? = null
+
+    private fun dropBindGroups() {
         boundHandles.fill(0L)
         bindGroups.forEach { it?.close() }
         bindGroups.fill(null)
+    }
+
+    /** Drop the cached bind groups, for a filter whose own bindings have changed. */
+    protected fun rebind() {
+        dropBindGroups()
         invalidate()
     }
 
-    private fun bindGroupFor(src: GPUTextureView): GPUBindGroup {
+    override fun cleanup() = dropBindGroups()
+
+    private fun bindGroupFor(src: GPUTextureView, pipeline: GPURenderPipeline): GPUBindGroup {
+        if (pipeline !== boundPipeline) {
+            dropBindGroups()
+            boundPipeline = pipeline
+        }
         val handle = src.handle
         for (i in boundHandles.indices) {
             if (boundHandles[i] == handle) bindGroups[i]?.let { return it }
@@ -58,7 +74,7 @@ abstract class FilterFullscreen : Filter() {
 
         val group = device.createBindGroup(
             GPUBindGroupDescriptor(
-                layout = pipeline.getBindGroupLayout(0), label = label, entries = entries(src)
+                layout = pipeline.groupLayout(), label = label, entries = entries(src)
             )
         )
         boundHandles[nextBindGroup] = handle
@@ -73,7 +89,7 @@ abstract class FilterFullscreen : Filter() {
     protected open fun prepare(srcWidth: Int, srcHeight: Int) {}
 
     override fun run(
-        chain: FilterChain,
+        chain: FullscreenFilterChain,
         encoder: GPUCommandEncoder,
         src: GPUTextureView,
         srcWidth: Int,
@@ -85,7 +101,8 @@ abstract class FilterFullscreen : Filter() {
         prepare(srcWidth, srcHeight)
 
         // Before the pass opens: prepare() may have replaced a binding and dropped the cache.
-        val group = bindGroupFor(src)
+        val pipeline = pipeline
+        val group = bindGroupFor(src, pipeline)
 
         val pass = Fullscreen.beginPass(encoder, dst, label)
         try {
@@ -98,7 +115,7 @@ abstract class FilterFullscreen : Filter() {
     }
 
     private companion object {
-        /** Enough for [FilterChain]'s texture ring, so a steady chain builds none per frame. */
+        /** Enough for [FullscreenFilterChain]'s texture ring, so a steady chain builds none per frame. */
         const val CACHED_BIND_GROUPS = 4
     }
 }

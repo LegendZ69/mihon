@@ -25,6 +25,7 @@ import ca.mpreg.webgpuviewer.renderer.FormatKeyed
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 import ca.mpreg.webgpuviewer.renderer.endAndRelease
+import ca.mpreg.webgpuviewer.renderer.groupLayout
 import ca.mpreg.webgpuviewer.renderer.setTransientBindGroup
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import java.nio.ByteBuffer
@@ -171,7 +172,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         pass.setTransientBindGroup(
             0, WebGpuRenderer.device.createBindGroup(
                 GPUBindGroupDescriptor(
-                    layout = fadeWhitePipeline.getBindGroupLayout(0),
+                    layout = fadeWhitePipeline.groupLayout(),
                     entries = arrayOf(
                         GPUBindGroupEntry(0, buffer = uniformBuffer),
                         GPUBindGroupEntry(1, textureView = cachedView),

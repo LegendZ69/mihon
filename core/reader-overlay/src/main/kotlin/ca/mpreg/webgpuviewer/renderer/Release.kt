@@ -1,12 +1,16 @@
 package ca.mpreg.webgpuviewer.renderer
 
 import androidx.webgpu.GPUBindGroup
+import androidx.webgpu.GPUBindGroupLayout
 import androidx.webgpu.GPUBuffer
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPUComputePassEncoder
+import androidx.webgpu.GPUComputePipeline
 import androidx.webgpu.GPUQueue
 import androidx.webgpu.GPURenderPassEncoder
+import androidx.webgpu.GPURenderPipeline
 import androidx.webgpu.GPUTexture
+import java.util.WeakHashMap
 
 /*
  * An androidx.webgpu wrapper holds a native reference that only close() drops - nothing releases it
@@ -65,4 +69,32 @@ internal fun GPUQueue.submitAndRelease(encoder: GPUCommandEncoder) {
     submit(arrayOf(commands))
     commands.close()
     encoder.close()
+}
+
+// Each getBindGroupLayout call returns a new native reference.
+private val groupLayouts = WeakHashMap<Any, GPUBindGroupLayout>()
+
+internal fun GPURenderPipeline.groupLayout(): GPUBindGroupLayout =
+    synchronized(groupLayouts) { groupLayouts.getOrPut(this) { getBindGroupLayout(0) } }
+
+internal fun GPUComputePipeline.groupLayout(): GPUBindGroupLayout =
+    synchronized(groupLayouts) { groupLayouts.getOrPut(this) { getBindGroupLayout(0) } }
+
+/**
+ * Drops [pipeline]'s cached layout without closing it, for a lost device's objects. Pipelines are
+ * keyed by handle, so a stale entry would hand a new pipeline that reuses the handle a layout it
+ * can't bind with.
+ */
+internal fun forgetGroupLayout(pipeline: Any): GPUBindGroupLayout? =
+    synchronized(groupLayouts) { groupLayouts.remove(pipeline) }
+
+/** Closes the pipeline and its cached layout - see [forgetGroupLayout]. */
+internal fun GPUComputePipeline.closeWithLayout() {
+    forgetGroupLayout(this)?.close()
+    close()
+}
+
+internal fun GPURenderPipeline.closeWithLayout() {
+    forgetGroupLayout(this)?.close()
+    close()
 }

@@ -1,7 +1,10 @@
 package ca.mpreg.webgpuviewer.viewer
 
+import android.view.animation.AnimationUtils
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.DecayAnimation
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.spring
@@ -11,11 +14,13 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -47,7 +52,6 @@ fun ImageViewerContinuous(
     val scope = rememberCoroutineScope()
     val view = LocalView.current
     val density = LocalDensity.current
-    val flingX = remember { Animatable(0f) }
     val decay = remember(density) { splineBasedDecay<Float>(density) }
 
     // What the platform considers a fling at all. A fixed figure here was three times this on a
@@ -62,6 +66,8 @@ fun ImageViewerContinuous(
     }
 
     RequestMaxRefreshRate()
+
+    HdrColorModeHost()
 
     val surfaceModifier = modifier
         .fillMaxSize()
@@ -111,6 +117,7 @@ fun ImageViewerContinuous(
                         }
                     } finally {
                         state.isScaleAnimating = false
+                        state.invalidate()
                     }
                 }
                 return true
@@ -163,9 +170,10 @@ fun ImageViewerContinuous(
                 if (waitForCleanUp(firstDown.id, doubleTapTimeout, touchSlop) != null) {
                     longPressJob?.cancel()
                     // A touch that only stopped motion can still be the first of a pair.
-                    val secondDown = waitForDown(doubleTapTimeout)
+                    val secondDown =
+                        if (state.doubleTapGesturesEnabled) waitForDown(doubleTapTimeout) else null
                     if (secondDown == null) {
-                        if (!stoppedMotion) {
+                        if (!stoppedMotion && !state.contentClaimedTouch) {
                             state.onTap?.invoke(
                                 Offset(
                                     firstDown.position.x / state.width,
@@ -204,6 +212,7 @@ fun ImageViewerContinuous(
                                     }
                                 } finally {
                                     state.isScaleAnimating = false
+                                    state.invalidate()
                                 }
                             }
                         } else {
@@ -230,6 +239,7 @@ fun ImageViewerContinuous(
                                     }
                                 } finally {
                                     state.isScaleAnimating = false
+                                    state.invalidate()
                                 }
                             }
                         }
@@ -285,7 +295,10 @@ fun ImageViewerContinuous(
                             willFlingZoom =
                                 abs(dragVelocity.y) > 200 && state.scale > state.minScale && state.scale < state.maxScale
                         } finally {
-                            if (!willFlingZoom) state.isScaleAnimating = false
+                            if (!willFlingZoom) {
+                                state.isScaleAnimating = false
+                                state.invalidate()
+                            }
                         }
 
                         val velocity = velocityTracker.calculateVelocity()
@@ -300,6 +313,9 @@ fun ImageViewerContinuous(
                                                 state.minScale, state.maxScale
                                             )
                                         val diff = 1f / newScale - 1f / originalScale
+                                        if (value != 0f && newScale == state.scale) {
+                                            throw FlingStalled()
+                                        }
                                         val maxOffsetX =
                                             max(0f, (newScale - 1f) / (2f * newScale))
                                         state.scale = newScale
@@ -310,8 +326,10 @@ fun ImageViewerContinuous(
                                         anchorScroll(-py * diff * state.height)
                                         state.invalidate()
                                     }
+                                } catch (_: FlingStalled) {
                                 } finally {
                                     state.isScaleAnimating = false
+                                    state.invalidate()
                                 }
                             }
                         } else if (!snapScaleIntoBounds(px, py)) {
@@ -335,18 +353,24 @@ fun ImageViewerContinuous(
                         do {
                             val event = awaitPointerEvent()
                             canceled = event.changes.any { it.isConsumed }
+                            if (longPressed) break
                             if (!canceled) {
                                 val change = event.changes[0]
 
-                                if (event.changes.size > 1 && event.changes.all { it.pressed }) {
+                                val twoFingers = event.changes.size > 1 && event.changes.all { it.pressed }
+                                if (twoFingers) {
                                     if (single) {
                                         longPressJob?.cancel()
                                         velocityTracker.resetTracking()
                                     }
                                     single = false
+                                    // The fingers' midpoint: one finger's own speed would fling a
+                                    // still pinch on release.
+                                    velocityTracker.addPosition(change.uptimeMillis, event.calculateCentroid(useCurrent = true))
+                                } else if (single && change.pressed) {
+                                    // Not the lift: it repeats the last position - see ImageViewer.
+                                    velocityTracker.addPointerInputChange(change)
                                 }
-
-                                velocityTracker.addPointerInputChange(change)
 
                                 val pan = event.calculatePan()
                                 // Off leaves two fingers panning without scaling.
@@ -397,6 +421,7 @@ fun ImageViewerContinuous(
                     } finally {
                         state.isScaleAnimating = false
                         state.isPanning = false
+                        state.invalidate()
                     }
 
                     longPressJob?.cancel()
@@ -408,15 +433,21 @@ fun ImageViewerContinuous(
                         if ((lastEventTime - lastMoveTime) < 100 &&
                             (abs(velocity.y) > minFlingVelocity || abs(velocity.x) > minFlingVelocity)
                         ) {
-                            state.animationJob = scope.launch(NormalMotionDurationScale) {
+                            // Timed from the lift, as RecyclerView's is: a decay timed from its own
+                            // first frame holds the strip still for a frame or two after the finger
+                            // leaves, then jumps.
+                            val liftNanos = AnimationUtils.currentAnimationTimeMillis() * 1_000_000
+                            state.animationJob = scope.launch {
                                 state.isFlinging = true
                                 try {
                                     val speed = hypot(velocity.x, velocity.y)
                                     val dirX = velocity.x / speed
                                     val dirY = velocity.y / speed
-                                    flingX.snapTo(0f)
+                                    val fling = DecayAnimation(decay, Float.VectorConverter, 0f, speed)
                                     var last = 0f
-                                    flingX.animateDecay(speed, decay) {
+                                    do {
+                                        val playNanos = (withFrameNanos { it } - liftNanos).coerceAtLeast(0)
+                                        val value = fling.getValueFromNanos(playNanos)
                                         val delta = value - last
                                         last = value
                                         val maxOffsetX =
@@ -434,10 +465,9 @@ fun ImageViewerContinuous(
                                         // "mid-fling". It never reverses, so one frame
                                         // settles it - but only one that asked to move.
                                         if (delta != 0f && state.offsetX == prevOffsetX && state.scrollY == prevScrollY) {
-                                            throw FlingStalled()
+                                            break
                                         }
-                                    }
-                                } catch (_: FlingStalled) {
+                                    } while (!fling.isFinishedFromNanos(playNanos))
                                 } finally {
                                     // Invalidate so generation resumes without waiting on the
                                     // next gesture.
@@ -453,20 +483,24 @@ fun ImageViewerContinuous(
             }
         }
 
-    ViewerSurface(surfaceModifier) { surface, width, height ->
-        try {
-            // Before init: the panel's HDR support gates the decode path, which can reach
-            // an image before the first frame.
-            attachHdrDisplay(view)
-            state.init(scope, surface, width, height)
-            surface.onChanged { w, h -> state.resize(w, h) }
-            // After init, so Hdr.resolve has run and the surface's capability is known.
-            attachHdrSurface(view)
-            state.invalidate()
-            state.collect()
-        } finally {
-            attachHdrSurface(null)
-            state.cleanup()
+    Box {
+        ViewerSurface(surfaceModifier) { surface, width, height ->
+            try {
+                // Before init: the panel's HDR support gates the decode path, which can reach
+                // an image before the first frame.
+                attachHdrDisplay(view)
+                state.init(scope, surface, width, height)
+                surface.onChanged { w, h -> state.resize(w, h) }
+                // After init, so Hdr.resolve has run and the surface's capability is known.
+                attachHdrSurface(view)
+                state.invalidate()
+                state.collect()
+            } finally {
+                attachHdrSurface(null)
+                state.cleanup()
+            }
         }
+
+        ComposePageHostView(state, Modifier.matchParentSize())
     }
 }

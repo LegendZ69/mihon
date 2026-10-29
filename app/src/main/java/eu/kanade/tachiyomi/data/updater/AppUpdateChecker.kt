@@ -7,10 +7,11 @@ import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.util.system.isFossBuildType
 import eu.kanade.tachiyomi.util.system.isNightlyBuildType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import tachiyomi.core.common.preference.PreferenceStore
-import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.domain.release.interactor.GetApplicationRelease
 
 @Inject
@@ -22,7 +23,9 @@ class AppUpdateChecker(
     private val policy = AppUpdateCheckPolicy(preferenceStore)
     private val mutex = Mutex()
 
-    suspend fun checkForUpdate(forceCheck: Boolean = false): GetApplicationRelease.Result = withIOContext {
+    suspend fun checkForUpdate(forceCheck: Boolean = false): GetApplicationRelease.Result = withContext(
+        Dispatchers.IO,
+    ) {
         mutex.withLock {
             if (!policy.shouldCheck(forceCheck)) return@withLock GetApplicationRelease.Result.NoNewUpdate
             try {

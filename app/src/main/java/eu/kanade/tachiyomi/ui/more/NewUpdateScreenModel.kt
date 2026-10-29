@@ -10,6 +10,7 @@ import dev.zacsweers.metro.AssistedInject
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactoryKey
+import eu.kanade.domain.base.BasePreferences
 import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.data.updater.AppUpdateManager
 import eu.kanade.tachiyomi.data.updater.AppUpdateStage
@@ -28,6 +29,7 @@ import java.io.File
 class NewUpdateScreenModel(
     @Assisted releaseJson: String,
     private val manager: AppUpdateManager,
+    private val preferences: BasePreferences,
 ) : ViewModel() {
     val release = Json.decodeFromString<Release>(releaseJson)
     private val error = MutableStateFlow<String?>(null)
@@ -75,6 +77,10 @@ class NewUpdateScreenModel(
         } finally {
             preparingInstall.value = false
         }
+    }
+
+    fun skipUpdate() {
+        preferences.skippedAppUpdate.set(release.version)
     }
 
     fun installError(message: String) {

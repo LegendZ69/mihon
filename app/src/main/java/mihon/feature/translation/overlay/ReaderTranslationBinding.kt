@@ -24,8 +24,8 @@ import java.security.MessageDigest
 /** A binding owns no reader stream and only accepts results for the exact bytes currently displayed. */
 fun readerTranslationDocuments(context: Context, page: ReaderPage): Flow<TranslationOverlayDocument?> {
     val graph = context.appGraph
-    val chapterId = requireNotNull(page.chapter.chapter.id)
-    val mangaId = requireNotNull(page.chapter.chapter.manga_id)
+    val chapterId = page.chapter.chapter.id
+    val mangaId = page.chapter.chapter.mangaId
     var verifiedHash: String? = null
     return combine(
         graph.translationRepository.observeResults(chapterId),

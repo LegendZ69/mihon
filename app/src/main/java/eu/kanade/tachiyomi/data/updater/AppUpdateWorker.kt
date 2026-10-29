@@ -14,10 +14,11 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import kotlinx.coroutines.CancellationException
 import mihon.app.di.appGraph
+import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.i18n.MR
 import java.util.UUID
 
 class AppUpdateWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
@@ -82,7 +83,7 @@ internal class AppUpdateNotifications(private val context: Context) {
         }
         return NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle(context.getString(R.string.app_name))
+            .setContentTitle(context.stringResource(MR.strings.app_name))
             .setContentIntent(
                 PendingIntent.getActivity(
                     context,
@@ -108,7 +109,7 @@ internal class AppUpdateNotifications(private val context: Context) {
             state?.let {
                 addAction(
                     android.R.drawable.ic_menu_close_clear_cancel,
-                    context.getString(R.string.action_cancel),
+                    context.stringResource(MR.strings.action_cancel),
                     WorkManager.getInstance(context).createCancelPendingIntent(UUID.fromString(it.id)),
                 )
             }

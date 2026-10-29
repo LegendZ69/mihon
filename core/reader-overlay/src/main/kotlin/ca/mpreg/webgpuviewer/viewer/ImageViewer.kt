@@ -10,11 +10,15 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -28,18 +32,24 @@ import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastForEach
+import androidx.window.layout.FoldingFeature
+import androidx.window.layout.WindowInfoTracker
 import ca.mpreg.webgpuviewer.NormalMotionDurationScale
 import ca.mpreg.webgpuviewer.RequestMaxRefreshRate
+import ca.mpreg.webgpuviewer.findActivity
 import ca.mpreg.webgpuviewer.orZero
+import ca.mpreg.webgpuviewer.renderer.Hdr
 import ca.mpreg.webgpuviewer.waitForCleanUp
 import ca.mpreg.webgpuviewer.waitForDown
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.unit.Velocity
 import kotlin.math.abs
-import kotlin.math.pow
+import kotlin.math.exp
 import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
@@ -60,16 +70,20 @@ fun ImageViewer(
     val minFlingVelocity = remember(view) {
         android.view.ViewConfiguration.get(view.context).scaledMinimumFlingVelocity.toFloat()
     }
-    // Get cutout top directly in px
-    val cutoutPx = WindowInsets.displayCutout.getTop(density).let { px ->
-        if (px == 0) {
-            val context = LocalContext.current
-            val resourceId =
-                context.resources.getIdentifier("status_bar_height", "dimen", "android")
-            context.resources.getDimensionPixelSize(resourceId).toFloat()
-        } else {
-            px.toFloat()
+    val context = LocalContext.current
+
+    val unfolded by produceState(false, context) {
+        val activity = context.findActivity() ?: return@produceState
+        WindowInfoTracker.getOrCreate(activity).windowLayoutInfo(activity).collect { info ->
+            value = info.displayFeatures.any { it is FoldingFeature }
         }
+    }
+    val statusBarPx = remember(context) {
+        val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (id != 0) context.resources.getDimensionPixelSize(id).toFloat() else 0f
+    }
+    val cutoutPx = WindowInsets.displayCutout.getTop(density).let { px ->
+        if (px == 0 && unfolded) statusBarPx else px.toFloat()
     }
 
     LaunchedEffect(density) {
@@ -81,6 +95,8 @@ fun ImageViewer(
     }
 
     RequestMaxRefreshRate()
+
+    HdrColorModeHost()
 
     // SurfaceView or TextureView depending on whether HDR is reachable - see [ViewerSurface],
     // which also carries the mihonapp/mihon#3773 history behind that choice.
@@ -106,6 +122,7 @@ fun ImageViewer(
                 if (stoppedMotion) {
                     page.isScaleAnimating = false
                     page.isFlinging = false
+                    page.invalidate()
                 }
 
                 var longPressed = false
@@ -130,7 +147,8 @@ fun ImageViewer(
                     longPressJob?.cancel()
                     // A stop settles below and fires no tap, but still waits out the double
                     // tap window: it can be the first of a pair.
-                    val secondDown = waitForDown(doubleTapTimeout)
+                    val secondDown =
+                        if (state.doubleTapGesturesEnabled) waitForDown(doubleTapTimeout) else null
                     if (secondDown == null) {
                         pageTurnJob?.cancel()
                         if (state.pageOffset != 0f) {
@@ -147,7 +165,7 @@ fun ImageViewer(
                             }
                         }
                         page.animateTo(Offset(0.5f, 0.5f))
-                        if (!stoppedMotion) {
+                        if (!stoppedMotion && !state.contentClaimedTouch) {
                             state.onTap?.invoke(
                                 Offset(
                                     firstDown.position.x / state.width,
@@ -213,14 +231,14 @@ fun ImageViewer(
                                         val py = secondDown.position.y / state.height - 0.5f
 
                                         val newScale =
-                                            originalScale * 10f.pow(2 * totalDeltaY / state.height)
+                                            quickZoomScale(originalScale, totalDeltaY)
 
-                                        page.scale = newScale
-                                        val diff = 1 / page.scale - 1 / originalScale
+                                        val diff = 1 / newScale - 1 / originalScale
 
                                         page.setPos(
                                             (originalX + px * diff).orZero(),
-                                            (originalY + py * diff).orZero()
+                                            (originalY + py * diff).orZero(),
+                                            newScale
                                         )
 
                                         change.consume()
@@ -233,7 +251,10 @@ fun ImageViewer(
                             willFlingZoom =
                                 abs(dragVelocity.y) > 200 && page.scale > page.homeScale && page.scale < page.maxScale
                         } finally {
-                            if (!willFlingZoom) page.isScaleAnimating = false
+                            if (!willFlingZoom) {
+                                page.isScaleAnimating = false
+                                page.invalidate()
+                            }
                         }
 
                         val velocity = velocityTracker.calculateVelocity()
@@ -248,27 +269,32 @@ fun ImageViewer(
                                         val py = secondDown.position.y / state.height - 0.5f
 
                                         val newScale =
-                                            originalScale * 10f.pow(2 * (totalDeltaY + value) / state.height)
+                                            quickZoomScale(originalScale, totalDeltaY + value)
 
-                                        page.scale =
+                                        val scale =
                                             newScale.fastCoerceIn(page.homeScale, page.maxScale)
-                                        val diff = 1 / page.scale - 1 / originalScale
+                                        val diff = 1 / scale - 1 / originalScale
 
                                         val x = (originalX + px * diff).orZero()
                                         val y = (originalY + py * diff).orZero()
 
-                                        val minX = page.minX(page.scale)
-                                        val maxX = page.maxX(page.scale)
-                                        val minY = page.minY(page.scale)
-                                        val maxY = page.maxY(page.scale)
+                                        val minX = page.minX(scale)
+                                        val maxX = page.maxX(scale)
+                                        val minY = page.minY(scale)
+                                        val maxY = page.maxY(scale)
 
+                                        val prevScale = page.scale
                                         page.setPos(
                                             x.fastCoerceIn(minX, maxX),
-                                            y.fastCoerceIn(minY, maxY)
+                                            y.fastCoerceIn(minY, maxY),
+                                            scale
                                         )
+                                        if (value != 0f && scale == prevScale) throw FlingStalled()
                                     }
+                                } catch (_: FlingStalled) {
                                 } finally {
                                     page.isScaleAnimating = false
+                                    page.invalidate()
                                 }
                             }
                         } else {
@@ -308,6 +334,7 @@ fun ImageViewer(
                         do {
                             val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                             canceled = event.changes.any { it.isConsumed }
+                            if (longPressed) break
                             if (canceled) {
                                 longPressJob?.cancel()
                             } else {
@@ -333,13 +360,17 @@ fun ImageViewer(
                                         pointerCountChanged = true
                                     }
                                     if (!pageTurning) {
-                                        velocityTracker.addPointerInputChange(change)
+                                        // The fingers' midpoint: one finger's own speed would fling a
+                                        // still pinch on release.
+                                        velocityTracker.addPosition(change.uptimeMillis, centroid)
                                         single = false
                                         scaleOrigin = Offset(
                                             centroid.x / state.width, centroid.y / state.height
                                         )
                                     }
-                                } else if (single) {
+                                } else if (single && change.pressed) {
+                                    // Not the lift: it repeats the last position, so a lift a moment after the last
+                                    // move reads as the finger having stopped, as Android's tracker knows to skip.
                                     velocityTracker.addPointerInputChange(change)
                                 }
 
@@ -413,8 +444,7 @@ fun ImageViewer(
                                             y = clampedY
                                         }
 
-                                        page.scale = newScale
-                                        page.setPos(x.orZero(), y.orZero())
+                                        page.setPos(x.orZero(), y.orZero(), newScale)
 
                                         event.changes.fastForEach { if (it.positionChanged()) it.consume() }
                                     }
@@ -423,13 +453,20 @@ fun ImageViewer(
                         } while (!canceled && event.changes.any { it.pressed })
                     } finally {
                         page.isScaleAnimating = false
+                        page.invalidate()
                     }
 
                     longPressJob?.cancel()
                     if (longPressed || canceled) return@awaitEachGesture
 
                     if (pageTurning) {
-                        val velocity = velocityTracker.calculateVelocity()
+                        // Without the lift's sample, a finger held still would keep the speed it had moving:
+                        // like Android's tracker, only moves within 100 ms of the lift count
+                        val velocity = if (lastEventTime - lastMoveTime > 100) {
+                            Velocity.Zero
+                        } else {
+                            velocityTracker.calculateVelocity()
+                        }
                         // Always raw, matching panAmount above - see that comment.
                         val initialVelocity =
                             if (state.isVertical) -velocity.y / state.height else -velocity.x / state.width
@@ -523,21 +560,51 @@ fun ImageViewer(
             }
         }
 
-    ViewerSurface(surfaceModifier) { surface, width, height ->
-        try {
-            // Before init: whether the panel does HDR at all gates the decode path, which can
-            // reach an image before the first frame is drawn.
-            attachHdrDisplay(view)
-            state.init(scope, surface, width, height)
-            surface.onChanged { w, h -> state.resize(w, h) }
-            // After init, so Hdr.resolve has run and the surface's capability is known too.
-            attachHdrSurface(view)
-            state.invalidate()
-            state.collect()
-        } finally {
-            attachHdrSurface(null)
-            state.cleanup()
+    Box {
+        ViewerSurface(surfaceModifier) { surface, width, height ->
+            try {
+                // Before init: whether the panel does HDR at all gates the decode path, which can
+                // reach an image before the first frame is drawn.
+                attachHdrDisplay(view)
+                state.init(scope, surface, width, height)
+                surface.onChanged { w, h -> state.resize(w, h) }
+                // After init, so Hdr.resolve has run and the surface's capability is known too.
+                attachHdrSurface(view)
+                state.invalidate()
+                state.collect()
+            } finally {
+                attachHdrSurface(null)
+                state.cleanup()
+            }
         }
+
+        ComposePageHostView(state, Modifier.matchParentSize())
+    }
+}
+
+/**
+ * [scale] after a double tap drag of [dy] px: Telephoto's rate, compounding 0.4% a pixel, so the readers zoom alike.
+ */
+private fun quickZoomScale(scale: Float, dy: Float) = scale * exp(0.004f * dy)
+
+/**
+ * Holds the window's HDR colour mode while this viewer is composed, and restores it on window refocus.
+ *
+ * [Hdr] otherwise ties the mode to the first/last HDR image; held all session it would ramp panel brightness
+ * on SDR reading. While unfocused, the system silently drops the colour mode and the surface's extended range.
+ */
+@Composable
+internal fun HdrColorModeHost() {
+    val view = LocalView.current
+    val focused = LocalWindowInfo.current.isWindowFocused
+
+    DisposableEffect(view) {
+        Hdr.attachColorModeHost(view)
+        onDispose { Hdr.detachColorModeHost(view) }
+    }
+
+    LaunchedEffect(focused) {
+        if (focused) Hdr.resyncPresentation()
     }
 }
 

@@ -16,6 +16,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import tachiyomi.data.Database
+import tachiyomi.data.MihonSqliteConnectionFactory
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch

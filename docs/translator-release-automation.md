@@ -18,7 +18,7 @@ repository's desired reviewer protection. Required environment secrets are:
 
 | Secret | Existing Gradle environment input |
 |---|---|
-| `SIGNING_KEY` | `storeFileBase64` (the existing keystore, base64 encoded) |
+| `SIGNING_KEY` | The existing keystore, base64 encoded. The build job decodes it to `$RUNNER_TEMP/antsy.keystore` and passes that path as `storeFile`, as upstream's release workflow does. |
 | `KEY_STORE_PASSWORD` | `storePassword` |
 | `ALIAS` | `keyAlias` |
 | `KEY_PASSWORD` | `keyPassword` |

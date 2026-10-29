@@ -6,13 +6,13 @@ import ca.mpreg.webgpuviewer.renderer.Hdr
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 
 /**
- * One post-processing step over the finished frame, run by [FilterChain] between the viewer's
+ * One post-processing step over the finished frame, run by [FullscreenFilterChain] between the viewer's
  * draw and the swapchain - see that class for how the chain is wired up.
  *
  * A filter reads [run]'s `src` and writes its result to `dst`; the chain owns both and
  * ping-pongs them, so a filter never allocates its own input or output. A multi-pass filter
  * (an upscaling network, say) takes scratch textures for its intermediate passes from
- * [FilterChain.scratch] and writes only its last pass into `dst`.
+ * [FullscreenFilterChain.scratch] and writes only its last pass into `dst`.
  *
  * Fragment or compute is the filter's own choice. [FilterFullscreen] covers the fragment case,
  * which is what a per-pixel filter wants: it can write the swapchain texture directly, so the
@@ -23,7 +23,7 @@ import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 abstract class Filter {
     protected val device get() = WebGpuRenderer.device
 
-    /** Ask for a redraw - set by [FilterChain] when this filter joins it. */
+    /** Ask for a redraw - set by [FullscreenFilterChain] when this filter joins it. */
     internal var onUpdate: (() -> Unit)? = null
 
     // Set from wherever the app's settings live, read on the render thread.
@@ -69,7 +69,7 @@ abstract class Filter {
     open fun outputHeight(width: Int, height: Int): Int = height
 
     abstract fun run(
-        chain: FilterChain,
+        chain: FullscreenFilterChain,
         encoder: GPUCommandEncoder,
         src: GPUTextureView,
         srcWidth: Int,
@@ -79,6 +79,6 @@ abstract class Filter {
         dstHeight: Int,
     )
 
-    /** Release GPU resources. Called on the render thread by [FilterChain.cleanup]. */
+    /** Release GPU resources. Called on the render thread by [FullscreenFilterChain.cleanup]. */
     open fun cleanup() {}
 }

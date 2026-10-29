@@ -34,6 +34,7 @@ import ca.mpreg.webgpuviewer.renderer.Hdr
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 import ca.mpreg.webgpuviewer.renderer.destroyAndRelease
+import ca.mpreg.webgpuviewer.renderer.groupLayout
 import ca.mpreg.webgpuviewer.renderer.setTransientBindGroup
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.blitCached
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.blitCachedRegion
@@ -299,7 +300,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             pass.setTransientBindGroup(
                 0, WebGpuRenderer.device.createBindGroup(
                     GPUBindGroupDescriptor(
-                        layout = regionPipeline.getBindGroupLayout(0), entries = arrayOf(
+                        layout = regionPipeline.groupLayout(), entries = arrayOf(
                             GPUBindGroupEntry(0, buffer = uniformBuffer),
                             GPUBindGroupEntry(1, textureView = cachedView),
                             GPUBindGroupEntry(2, sampler = blitSampler)
@@ -350,6 +351,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         private var cacheHeight = 0
         private var cacheFormat = 0
 
+        // Bumped on every swap or clear; a render records its metadata only if unchanged.
+        private var cacheGeneration = 0
+
         // Textures pending destruction (deferred to avoid use-after-free), with the views over them:
         // a view is a Dawn handle of its own and only close() releases it.
         private var pendingDestroy1: GPUTexture? = null
@@ -397,6 +401,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 view2 = texture2!!.createView()
 
                 // Invalidate cache
+                cacheGeneration++
                 cachedPage1 = null
                 cachedPage2 = null
                 blittedKeys1 = emptySet()
@@ -436,6 +441,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
          */
         fun invalidateCache() {
             synchronized(cacheLock) {
+                cacheGeneration++
                 cachedPage1 = null
                 cachedPage2 = null
                 blittedKeys1 = emptySet()
@@ -450,6 +456,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
          */
         internal fun releasePagesOf(state: ImageViewerState) {
             synchronized(cacheLock) {
+                cacheGeneration++
                 if (cachedPage1?.parent === state) {
                     cachedPage1 = null
                     blittedKeys1 = emptySet()
@@ -469,6 +476,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
          */
         fun rotateCacheOnPageChange(newCurrentPage: ImagePage) {
             synchronized(cacheLock) {
+                cacheGeneration++
                 when {
                     cacheHitLocked(newCurrentPage, true) -> {
                         cachedPage2 = null
@@ -531,18 +539,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             tiles: TileRenderer,
         ): GPUTextureView? {
             if (page.destroyed || !page.isDecoded) return null
+            if (dstWidth <= 0 || dstHeight <= 0) return null
 
             // Lock only for metadata - GPU recording runs on the single GPU thread and doesn't
             // need it; cacheLock only guards against invalidateCache() from the UI thread.
+            var generation = 0
             val (texture, view, identityMatches, blittedKeys) = synchronized(cacheLock) {
                 ensureTexturesLocked(dstWidth, dstHeight)
+                generation = cacheGeneration
                 val texture = if (isPage1) texture1!! else texture2!!
                 val view = if (isPage1) view1!! else view2!!
                 val blitted = if (isPage1) blittedKeys1 else blittedKeys2
-                // Never a hit for an animated page - it swaps images every frame, so every call
-                // needs a fresh LoadOp.Clear + renderCacheSeed to blit whatever frame is current
-                // right now, rather than relying on frameVersion happening to have ticked.
-                val matches = !page.isAnimated && cacheHitLocked(page, isPage1)
+                // An animation's swap bumps frameVersion, so it misses like any other change.
+                val matches = cacheHitLocked(page, isPage1)
                 CacheReadResult(texture, view, matches, blitted)
             }
 
@@ -563,13 +572,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // own pass (Load or Clear, matching identityMatches) rather than sharing one from here.
             page.renderIntoCache(encoder, texture, tiles, identityMatches)
 
-            // [available] is still accurate after the render: renderIntoCache
-            // only blit what's already cached and queue what's missing for the background worker
-            // - generation itself is async, so st.tiles can't have gained anything in between.
-            // Reusing it here instead of re-walking the grid halves this call's cost.
-            val newBlitted = available ?: emptySet()
+            val newBlitted =
+                if (available == null) emptySet()
+                else page.newlyAvailableTileKeys(tiles, texture) ?: emptySet()
 
             synchronized(cacheLock) {
+                // Swapped mid-render: the view is still right, the metadata isn't.
+                if (generation != cacheGeneration) return view
                 if (isPage1) blittedKeys1 = newBlitted else blittedKeys2 = newBlitted
                 if (!identityMatches) {
                     // Update cache metadata - only needed on a real identity change; an unchanged
@@ -650,7 +659,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             pass.setTransientBindGroup(
                 0, WebGpuRenderer.device.createBindGroup(
                     GPUBindGroupDescriptor(
-                        layout = blitPipeline.getBindGroupLayout(0), entries = arrayOf(
+                        layout = blitPipeline.groupLayout(), entries = arrayOf(
                             GPUBindGroupEntry(0, buffer = uniformBuffer),
                             GPUBindGroupEntry(1, textureView = cachedView),
                             GPUBindGroupEntry(2, sampler = blitSampler)

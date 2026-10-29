@@ -41,6 +41,7 @@ import ca.mpreg.webgpuviewer.draw.rect
 import ca.mpreg.webgpuviewer.renderer.FormatKeyed
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
 import ca.mpreg.webgpuviewer.renderer.endAndRelease
+import ca.mpreg.webgpuviewer.renderer.groupLayout
 import ca.mpreg.webgpuviewer.renderer.setTransientBindGroup
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.blendBackgroundColor
 import ca.mpreg.webgpuviewer.transition.Transition.Companion.blitCachedRegion
@@ -435,7 +436,7 @@ object TransitionFlip : Transition() {
         pass.setTransientBindGroup(
             0, device.createBindGroup(
                 GPUBindGroupDescriptor(
-                    layout = pipeline.getBindGroupLayout(0), entries = arrayOf(
+                    layout = pipeline.groupLayout(), entries = arrayOf(
                         GPUBindGroupEntry(0, buffer = uniforms),
                         GPUBindGroupEntry(1, textureView = front),
                         GPUBindGroupEntry(2, textureView = back),

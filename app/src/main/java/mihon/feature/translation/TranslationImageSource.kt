@@ -7,12 +7,12 @@ import de.stefan_oltmann.kim.android.readMetadata
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
-import eu.kanade.tachiyomi.data.cache.ChapterCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.reader.loader.ChapterLoader
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -22,6 +22,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import mihon.core.metro.AppCoroutineScope
+import mihon.data.cache.ChapterCache
 import tachiyomi.domain.chapter.interactor.GetChapter
 import tachiyomi.domain.download.service.DownloadPreferences
 import tachiyomi.domain.manga.interactor.GetManga
@@ -45,6 +47,7 @@ class TranslationImageSource(
     private val downloadProvider: DownloadProvider,
     private val chapterCache: ChapterCache,
     private val downloadPreferences: DownloadPreferences,
+    @AppCoroutineScope private val appScope: CoroutineScope,
 ) {
     private val sourceLocks = ConcurrentHashMap<Long, Mutex>()
     private val sourcePermits = Semaphore(downloadPreferences.parallelSourceLimit.get().coerceIn(1, 10))
@@ -64,8 +67,17 @@ class TranslationImageSource(
                 val readerChapter = ReaderChapter(chapter)
                 readerChapter.ref()
                 try {
-                    ChapterLoader(context, downloadManager, downloadProvider, chapterCache, manga, source)
-                        .loadChapter(readerChapter)
+                    // Acquisition fetches every page itself, so the reader's load-ahead stays off.
+                    ChapterLoader(
+                        context,
+                        downloadManager,
+                        downloadProvider,
+                        chapterCache,
+                        appScope,
+                        { false },
+                        manga,
+                        source,
+                    ).loadChapter(readerChapter)
                     val pages = requireNotNull(readerChapter.pages)
                     val dir = File(context.noBackupFilesDir, "translation/images/${job.id}").apply { mkdirs() }
                     val permits = Semaphore(downloadPreferences.parallelPageLimit.get().coerceIn(1, 15))
@@ -87,8 +99,9 @@ class TranslationImageSource(
                                                         source.getImageUrl(page)
                                                 }
                                                 val url = requireNotNull(page.imageUrl)
-                                                if (chapterCache.isImageInCache(url)) {
-                                                    chapterCache.getImageFile(url).copyTo(temp, overwrite = true)
+                                                val cached = chapterCache.getImageFile(url)
+                                                if (cached != null) {
+                                                    cached.copyTo(temp, overwrite = true)
                                                 } else {
                                                     source.getImage(page).use { response ->
                                                         if (!response.isSuccessful) {

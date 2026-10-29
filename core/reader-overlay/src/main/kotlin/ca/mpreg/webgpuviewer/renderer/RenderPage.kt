@@ -1,5 +1,6 @@
 package ca.mpreg.webgpuviewer.renderer
 
+import android.graphics.RectF
 import androidx.webgpu.BlendFactor
 import androidx.webgpu.BlendOperation
 import androidx.webgpu.BufferUsage
@@ -8,6 +9,7 @@ import androidx.webgpu.GPUBindGroupDescriptor
 import androidx.webgpu.GPUBindGroupEntry
 import androidx.webgpu.GPUBlendComponent
 import androidx.webgpu.GPUBlendState
+import androidx.webgpu.GPUBuffer
 import androidx.webgpu.GPUBufferDescriptor
 import androidx.webgpu.GPUColorTargetState
 import androidx.webgpu.GPUDepthStencilState
@@ -24,7 +26,8 @@ import androidx.webgpu.GPUVertexState
 import androidx.webgpu.OptionalBool
 import androidx.webgpu.PrimitiveTopology.Companion.TriangleList
 import androidx.webgpu.TextureFormat
-import ca.mpreg.webgpuviewer.renderer.RenderPage.MAGNIFY_MAIN
+import ca.mpreg.webgpuviewer.renderer.RenderPage.HEADER
+import ca.mpreg.webgpuviewer.renderer.RenderPage.TILE_HEADER
 import ca.mpreg.webgpuviewer.renderer.RenderPage.TILE_SAMPLER_FS
 import ca.mpreg.webgpuviewer.renderer.RenderPage.draw
 import ca.mpreg.webgpuviewer.renderer.RenderPage.drawMaskedRect
@@ -45,9 +48,10 @@ import java.nio.ByteOrder
  * counterparts, sharing [variantFor]/[drawTile]/[drawMaskedRect] with this object.
  *
  * Three shaders, picked per call:
- *  - [render] - box filter minifying, Catmull-Rom magnifying, in linear light. Sharp and
- *    expensive, so bound to a fixed 2x2-tile window - safe only because its one caller,
- *    [TileRenderer]'s tile generation, always targets a single tile-sized destination.
+ *  - [render] - the resolve a [Sampler] supplies, in linear light: Catmull-Rom magnifying, a box
+ *    filter minifying, unless [TileRenderer]'s samplers say otherwise. Sharp and expensive, so
+ *    bound to a fixed 2x2-tile window - safe only because its one caller, [TileRenderer]'s tile
+ *    generation, always targets a single tile-sized destination.
  *  - [renderFast] - one bilinear tap per pixel, also linear-light via a cheap gamma-2.2
  *    approximation (so a [TileRenderer] tile popping in over it never shows a brightness seam,
  *    close enough that the curve mismatch isn't visible) unless called with `linear = false`,
@@ -61,9 +65,31 @@ import java.nio.ByteOrder
 object RenderPage {
     private val device get() = WebGpuRenderer.device
 
-    // Thread-local ByteBuffer to avoid per-frame allocation
-    private val byteBufferLocal = ThreadLocal.withInitial {
-        ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder())
+    // Per thread, to avoid per-frame allocation. Each exactly its uniform's size: writeBuffer
+    // uploads a ByteBuffer's whole capacity, whatever its limit.
+    private val quadBytes = ThreadLocal.withInitial {
+        ByteBuffer.allocateDirect(PLACEMENT_BYTES + 16).order(ByteOrder.nativeOrder())
+    }
+    private val tileBytes = ThreadLocal.withInitial {
+        ByteBuffer.allocateDirect(PLACEMENT_BYTES).order(ByteOrder.nativeOrder())
+    }
+
+    /** dst_rect, src_rect, content, dst_size - the part [HEADER] and [TILE_HEADER] share. */
+    internal const val PLACEMENT_BYTES = 48
+
+    private fun putPlacement(buffer: ByteBuffer, p: Image.Placement, dst: GPUTexture) {
+        buffer.putFloat(p.dstLeft)
+        buffer.putFloat(p.dstTop)
+        buffer.putFloat(p.dstLeft + p.dstWidth)
+        buffer.putFloat(p.dstTop + p.dstHeight)
+        buffer.putFloat(p.srcLeft)
+        buffer.putFloat(p.srcTop)
+        buffer.putFloat(p.srcLeft + p.srcWidth)
+        buffer.putFloat(p.srcTop + p.srcHeight)
+        buffer.putFloat(p.contentWidth)
+        buffer.putFloat(p.contentHeight)
+        buffer.putFloat(dst.width.toFloat())
+        buffer.putFloat(dst.height.toFloat())
     }
 
     /**
@@ -95,28 +121,28 @@ object RenderPage {
         )
     }
 
-    /** The two resolves in force. [render] picks between them once the mip level is known. */
+    /**
+     * The resolves in force for enlarging and shrinking draws; [render] picks once the mip level is
+     * known. One [Sampler] can fill both.
+     */
     internal class Filtered(val magnify: Variant, val minify: Variant)
 
     /**
-     * Pipelines for a pair of rescaler resolves, built on first use and kept.
+     * Pipelines for sampler resolves, built on first use and kept.
      *
-     * Keyed by the shader text, not the rescaler, and kept apart by direction: two
-     * [UpscalerCatmullRom]s share a pipeline, and so does an [UpscalerArtCnn] with either, its own
-     * leftover resolve being Catmull-Rom too. Only [TileRenderer] reaches this, and only when its
-     * rescalers change, so hashing a few KB of source is not on any hot path.
+     * Keyed by shader text, so two [Sampler.catmullRom]s, or one in both [Filtered] roles, share one.
+     * Reached only when [TileRenderer]'s samplers change, so hashing a few KB of source is off the hot
+     * path.
      */
-    private val magnifyVariants = HashMap<String, Variant>()
-    private val minifyVariants = HashMap<String, Variant>()
+    private val resolveVariants = HashMap<String, Variant>()
 
-    internal fun filtered(magnify: String, minify: String) = Filtered(
-        magnifyVariants.getOrPut(magnify) {
-            Variant { format -> buildPipeline(HEADER + VS_MAIN + magnify + MAGNIFY_MAIN, format) }
-        },
-        minifyVariants.getOrPut(minify) {
-            Variant { format -> buildPipeline(HEADER + VS_MAIN + minify + MINIFY_MAIN, format) }
-        },
-    )
+    private fun variant(code: String) = resolveVariants.getOrPut(code) {
+        Variant { format -> buildPipeline(HEADER + VS_MAIN + code + RESOLVE_MAIN, format) }
+    }
+
+    /** The resolves the samplers in force supply - see [Sampler.code]. */
+    internal fun filtered(magnify: String, minify: String) =
+        Filtered(variant(magnify), variant(minify))
 
     // As samplerVariant, but stencil-free - Transition's cache-seed pass has none, and doesn't
     // need one: it fills once, then tiles blit on top in later passes via ordinary blending.
@@ -295,36 +321,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         val uniformBuffer = device.createBuffer(
             GPUBufferDescriptor(size = 32L, usage = BufferUsage.Uniform or BufferUsage.CopyDst)
         )
-        uniformBuffer.use {
-            device.queue.use { it.writeBuffer(uniformBuffer, 0, byteBuffer) }
+        device.queue.writeBuffer(uniformBuffer, 0, byteBuffer)
 
-            val maskedRectPipeline = maskedRectPipelines[format]
-            pass.setPipeline(maskedRectPipeline)
-            maskedRectPipeline.getBindGroupLayout(0).use { layout ->
-                device.createBindGroup(
-                    GPUBindGroupDescriptor(
-                        layout = layout, entries = arrayOf(
-                            GPUBindGroupEntry(0, buffer = uniformBuffer)
-                        )
+        val maskedRectPipeline = maskedRectPipelines[format]
+        pass.setPipeline(maskedRectPipeline)
+        pass.setTransientBindGroup(
+            0, device.createBindGroup(
+                GPUBindGroupDescriptor(
+                    layout = maskedRectPipeline.groupLayout(), entries = arrayOf(
+                        GPUBindGroupEntry(0, buffer = uniformBuffer)
                     )
-                ).use { group ->
-                    pass.setBindGroup(0, group)
-                    pass.draw(6)
-                }
-            }
-        }
+                )
+            )
+        )
+        pass.draw(6)
+        uniformBuffer.close()
     }
 
-    /** Uniforms, texture bindings and the vertex stage's view of the source, shared by both. */
+    /**
+     * Uniforms, bindings and source helpers shared by both resolves. Geometry comes from the CPU:
+     * [dst_rect] in target pixels, [src_rect] the window texels mapped onto it, [content] the
+     * window's image texels. Texture sizes never enter in - tiles may be padded (see [Mipmap]),
+     * and reads clamp to [content].
+     */
     private const val HEADER = """
 struct Uniforms {
-    offset: vec2<f32>,
-    scale: f32,
+    dst_rect: vec4<f32>,
+    src_rect: vec4<f32>,
+    content: vec2<f32>,
+    dst_size: vec2<f32>,
     tile_size: f32,
-    tiles_width: f32,
-    tiles_height: f32,
-    dst_width: f32,
-    dst_height: f32,
 }
 
 @group(0) @binding(0) var<uniform> transform: Uniforms;
@@ -338,21 +364,20 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
 };
 
-fn totalDimensions() -> vec2<u32> {
-    let w = i32(transform.tiles_width);
-    let h = i32(transform.tiles_height);
-    if (w <= 0 || h <= 0) {
-        return vec2<u32>(0u);
-    }
+/** Image texels in the 2x2 window, padding excluded - what every read is clamped to. */
+fn contentSize() -> vec2<u32> {
+    return vec2<u32>(transform.content);
+}
 
-    let dim0 = textureDimensions(src_tex0);
-    var width = dim0.x;
-    if (w > 1) { width += textureDimensions(src_tex1).x; }
+/** The window position, in texels, that [uv] across the destination maps to. */
+fn src_at(uv: vec2<f32>) -> vec2<f32> {
+    return mix(transform.src_rect.xy, transform.src_rect.zw, uv);
+}
 
-    var height = dim0.y;
-    if (h > 1) { height += textureDimensions(src_tex2).y; }
-
-    return vec2<u32>(width, height);
+/** Source texels one destination pixel spans. */
+fn src_per_dst() -> vec2<f32> {
+    return (transform.src_rect.zw - transform.src_rect.xy) /
+        (transform.dst_rect.zw - transform.dst_rect.xy);
 }
 
 // Shared by both fragment variants: the fast path also filters in linear light now, so both need
@@ -408,21 +433,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     );
 
     let uv = uvs[vertex_index];
+    let pixel_pos = mix(transform.dst_rect.xy, transform.dst_rect.zw, uv);
 
-    let dst_size_f = vec2<f32>(transform.dst_width, transform.dst_height);
-    let src_size_f = vec2<f32>(totalDimensions());
-
-    // Calculate destination canvas pixel position
-    let pixel_pos = transform.scale * (transform.offset * dst_size_f + uv * src_size_f);
-
-    // Convert pixel coordinate to WebGPU NDC Space:
-    // X goes from [-1.0, 1.0] (left to right)
-    // Y goes from [1.0, -1.0] (top to bottom)
-    let ndc_x = (pixel_pos.x / dst_size_f.x) * 2.0 - 1.0;
-    let ndc_y = 1.0 - (pixel_pos.y / dst_size_f.y) * 2.0;
-
+    // Target pixels to NDC, y flipped.
     var out: VertexOutput;
-    out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    out.position = vec4<f32>(
+        (pixel_pos.x / transform.dst_size.x) * 2.0 - 1.0,
+        1.0 - (pixel_pos.y / transform.dst_size.y) * 2.0,
+        0.0, 1.0
+    );
     out.uv = uv;
     return out;
 }
@@ -430,15 +449,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
     /**
      * Uniforms, single-texture binding and vertex stage shared by [renderFast]/[ImagePage.ImageSingle.renderPage]'s
-     * per-tile draws - no [tile_size]/[tiles_width]/[tiles_height] bookkeeping, since a draw
-     * through here is always exactly one tile.
+     * per-tile draws - one tile a draw, so no window bookkeeping. As [HEADER], [dst_rect] and
+     * [src_rect] place it and [content] is the tile's image texels, padding excluded.
      */
     private const val TILE_HEADER = """
 struct TileUniforms {
-    offset: vec2<f32>,
-    scale: f32,
-    dst_width: f32,
-    dst_height: f32,
+    dst_rect: vec4<f32>,
+    src_rect: vec4<f32>,
+    content: vec2<f32>,
+    dst_size: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> transform: TileUniforms;
@@ -471,14 +490,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> TileVertexOutput {
     );
 
     let uv = uvs[vertex_index];
-    let dst_size_f = vec2<f32>(transform.dst_width, transform.dst_height);
-    let src_size_f = vec2<f32>(textureDimensions(src_tex));
-    let pixel_pos = transform.scale * (transform.offset * dst_size_f + uv * src_size_f);
+    let pixel_pos = mix(transform.dst_rect.xy, transform.dst_rect.zw, uv);
 
     var out: TileVertexOutput;
     out.position = vec4<f32>(
-        (pixel_pos.x / dst_size_f.x) * 2.0 - 1.0,
-        1.0 - (pixel_pos.y / dst_size_f.y) * 2.0,
+        (pixel_pos.x / transform.dst_size.x) * 2.0 - 1.0,
+        1.0 - (pixel_pos.y / transform.dst_size.y) * 2.0,
         0.0, 1.0
     );
     out.uv = uv;
@@ -493,12 +510,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> TileVertexOutput {
     private const val TILE_SAMPLER_FS = """
 @fragment
 fn fs_main(in: TileVertexOutput) -> @location(0) vec4<f32> {
-    let size = vec2<f32>(textureDimensions(src_tex));
-    let pos = in.uv * size;
+    let pos = mix(transform.src_rect.xy, transform.src_rect.zw, in.uv);
     let p = pos - 0.5;
     let base = floor(p);
 
-    let max_coord = vec2<i32>(size) - 1;
+    let max_coord = vec2<i32>(transform.content) - 1;
     let i0 = clamp(vec2<i32>(base), vec2<i32>(0), max_coord);
     let i1 = clamp(vec2<i32>(base) + 1, vec2<i32>(0), max_coord);
     let f = p - base;
@@ -521,12 +537,11 @@ fn fs_main(in: TileVertexOutput) -> @location(0) vec4<f32> {
     private const val TILE_PLAIN_FS = """
 @fragment
 fn fs_main(in: TileVertexOutput) -> @location(0) vec4<f32> {
-    let size = vec2<f32>(textureDimensions(src_tex));
-    let pos = in.uv * size;
+    let pos = mix(transform.src_rect.xy, transform.src_rect.zw, in.uv);
     let p = pos - 0.5;
     let base = floor(p);
 
-    let max_coord = vec2<i32>(size) - 1;
+    let max_coord = vec2<i32>(transform.content) - 1;
     let i0 = clamp(vec2<i32>(base), vec2<i32>(0), max_coord);
     let i1 = clamp(vec2<i32>(base) + 1, vec2<i32>(0), max_coord);
     let f = p - base;
@@ -541,7 +556,10 @@ fn fs_main(in: TileVertexOutput) -> @location(0) vec4<f32> {
 }
 """
 
-    /** Premultiply individual samples before interpolation; transparent RGB must not darken edges. */
+    /**
+     * Fragment stage for overlays: [TILE_PLAIN_FS]'s tap, premultiplying each sample before
+     * interpolation so transparent RGB never darkens antialiased edges.
+     */
     private const val TILE_OVERLAY_FS = """
 fn overlay_sample(pos: vec2<i32>) -> vec4<f32> {
     let col = textureLoad(src_tex, pos, 0);
@@ -550,13 +568,15 @@ fn overlay_sample(pos: vec2<i32>) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: TileVertexOutput) -> @location(0) vec4<f32> {
-    let size = vec2<f32>(textureDimensions(src_tex));
-    let p = in.uv * size - 0.5;
+    let pos = mix(transform.src_rect.xy, transform.src_rect.zw, in.uv);
+    let p = pos - 0.5;
     let base = floor(p);
-    let max_coord = vec2<i32>(size) - 1;
+
+    let max_coord = vec2<i32>(transform.content) - 1;
     let i0 = clamp(vec2<i32>(base), vec2<i32>(0), max_coord);
     let i1 = clamp(vec2<i32>(base) + 1, vec2<i32>(0), max_coord);
     let f = p - base;
+
     let c00 = overlay_sample(vec2<i32>(i0.x, i0.y));
     let c10 = overlay_sample(vec2<i32>(i1.x, i0.y));
     let c01 = overlay_sample(vec2<i32>(i0.x, i1.y));
@@ -566,25 +586,16 @@ fn fs_main(in: TileVertexOutput) -> @location(0) vec4<f32> {
 """
 
     /**
-     * Fragment stage for a magnifying draw: [Upscaler]'s `resolve_magnify`, and the premultiply
-     * every draw through here ends with.
+     * Fragment stage for a [Sampler]'s `resolve`, plus the premultiply every draw here ends with.
+     * `resolve` gets the pixel's footprint in source texels (start, and size = texels per pixel), not
+     * whether it enlarges or shrinks: the sampler decides.
      */
-    private const val MAGNIFY_MAIN = """
+    private const val RESOLVE_MAIN = """
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let col = resolve_magnify(in.uv);
-    return vec4<f32>(col.rgb * col.a, col.a);
-}
-"""
-
-    /** As [MAGNIFY_MAIN], for a minifying draw: [Downscaler]'s `resolve_minify`. */
-    private const val MINIFY_MAIN = """
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // resolve_minify takes src_start, the footprint's position in source pixels, and the
-    // footprint's own size - which is how many source pixels one destination pixel covers.
-    let src_start = in.uv * vec2<f32>(totalDimensions());
-    let col = resolve_minify(src_start, vec2<f32>(1.0 / transform.scale));
+    // The pixel centre maps to the footprint's middle, so the start is half a footprint back.
+    let size = src_per_dst();
+    let col = resolve(src_at(in.uv) - 0.5 * size, size);
     return vec4<f32>(col.rgb * col.a, col.a);
 }
 """
@@ -602,13 +613,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         y: Float,
         scale: Float,
         filtered: Filtered,
+        /** See [Image.prepareForRender]. */
+        extend: Extend? = null,
+        /** See [Image.prepareForRender]. */
+        levelZero: Boolean = false,
+        /** See [draw]. */
+        uniform: GPUBuffer = image.buffer,
+        /** See [Image.prepareForRender]. */
+        source: Mipmap? = null,
     ) {
-        val res = image.prepareForRender(dst, x, y, scale) ?: return
+        val res = image.prepareForRender(dst, x, y, scale, extend, levelZero, source) ?: return
         // Decided here rather than per fragment: it is one value for the whole draw, and a shader
         // carrying both resolves needs registers for the union of them. Against
         // [Image.MipMapForDraw.scale], not the caller's - picking a mip level moves the scale the
         // draw resolves at, and moves it toward 1, the very boundary being tested.
-        draw(pass, image, dst, res, if (res.scale < 1f) filtered.minify else filtered.magnify)
+        draw(pass, dst, res, if (res.scale < 1f) filtered.minify else filtered.magnify, uniform)
     }
 
     /** Picks one of the 4 tile pipelines - shared by [renderFast] and [ImagePage.ImageSingle.renderPage]. */
@@ -633,8 +652,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         y: Float,
         scale: Float,
         linear: Boolean = true,
-        masked: Boolean = true
-    ) = renderImageTiled(pass, image, dst, x, y, scale, variantFor(linear, masked))
+        masked: Boolean = true,
+        /** Only this part of [image], in its pixels, in place - see [Image.prepareTilesForRender]. */
+        src: RectF? = null,
+    ) = renderImageTiled(pass, image, dst, x, y, scale, variantFor(linear, masked), src)
 
     /** Draw straight-RGBA overlay tiles with premultiplied interpolation and source-over blending. */
     internal fun renderOverlay(
@@ -654,50 +675,49 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         x: Float,
         y: Float,
         scale: Float,
-        variant: Variant
+        variant: Variant,
+        src: RectF? = null,
     ) {
-        for (tile in image.prepareTilesForRender(dst, x, y, scale)) {
+        for (tile in image.prepareTilesForRender(dst, x, y, scale, src)) {
             drawTile(pass, dst, tile, variant)
         }
     }
 
     private fun draw(
         pass: GPURenderPassEncoder,
-        image: Image,
         dst: GPUTexture,
         res: Image.MipMapForDraw,
-        variant: Variant
+        variant: Variant,
+        /**
+         * Where the placement is written. A draw reads it when the pass runs, not when recorded,
+         * so two draws of one image in one command buffer (two blocks) need a buffer each, or both
+         * see the last write.
+         */
+        uniform: GPUBuffer,
     ) {
-        val byteBuffer = byteBufferLocal.get()
+        val byteBuffer = quadBytes.get()
         byteBuffer.clear()
-        byteBuffer.putFloat(res.x)
-        byteBuffer.putFloat(res.y)
-        byteBuffer.putFloat(res.scale)
+        putPlacement(byteBuffer, res.placement, dst)
         byteBuffer.putFloat(res.mipmap.tilesize.toFloat())
-        byteBuffer.putFloat(res.mipmap.tilesCols.toFloat())
-        byteBuffer.putFloat(res.mipmap.tilesRows.toFloat())
-        byteBuffer.putFloat(dst.width.toFloat())
-        byteBuffer.putFloat(dst.height.toFloat())
         byteBuffer.flip()
 
-        device.queue.use { it.writeBuffer(image.buffer, 0, byteBuffer) }
+        device.queue.writeBuffer(uniform, 0, byteBuffer)
 
         val pipeline = variant.pipeline(dst.format)
         val entries = arrayOf(
-            GPUBindGroupEntry(0, buffer = image.buffer),
+            GPUBindGroupEntry(0, buffer = uniform),
         ).plus(res.quad.tileViews.mapIndexed { i, view ->
             GPUBindGroupEntry(1 + i, textureView = view)
         })
 
         pass.setPipeline(pipeline)
-        pipeline.getBindGroupLayout(0).use { layout ->
-            device.createBindGroup(
-                GPUBindGroupDescriptor(layout = layout, entries = entries)
-            ).use { group ->
-                pass.setBindGroup(0, group)
-                pass.draw(6)
-            }
-        }
+        pass.setTransientBindGroup(
+            0, device.createBindGroup(
+                GPUBindGroupDescriptor(layout = pipeline.groupLayout(), entries = entries)
+            )
+        )
+
+        pass.draw(6)
     }
 
     /**
@@ -707,34 +727,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     internal fun drawTile(
         pass: GPURenderPassEncoder, dst: GPUTexture, tile: Image.TileForDraw, variant: Variant
     ) {
-        val byteBuffer = byteBufferLocal.get()
+        val byteBuffer = tileBytes.get()
         byteBuffer.clear()
-        byteBuffer.putFloat(tile.x)
-        byteBuffer.putFloat(tile.y)
-        byteBuffer.putFloat(tile.scale)
-        byteBuffer.putFloat(dst.width.toFloat())
-        byteBuffer.putFloat(dst.height.toFloat())
+        putPlacement(byteBuffer, tile.placement, dst)
         byteBuffer.flip()
 
-        device.queue.use { it.writeBuffer(tile.uniform, 0, byteBuffer) }
+        device.queue.writeBuffer(tile.uniform, 0, byteBuffer)
 
         val pipeline = variant.pipeline(dst.format)
         pass.setPipeline(pipeline)
         // samplerVariant's stencil test reads against 1 - see [TileRenderer.blitPipelineStencilWrite],
         // the only thing that ever writes this attachment.
         if (variant === samplerVariant) pass.setStencilReference(1)
-        pipeline.getBindGroupLayout(0).use { layout ->
-            device.createBindGroup(
+        pass.setTransientBindGroup(
+            0, device.createBindGroup(
                 GPUBindGroupDescriptor(
-                    layout = layout, entries = arrayOf(
+                    layout = pipeline.groupLayout(), entries = arrayOf(
                         GPUBindGroupEntry(0, buffer = tile.uniform),
                         GPUBindGroupEntry(1, textureView = tile.view),
                     )
                 )
-            ).use { group ->
-                pass.setBindGroup(0, group)
-                pass.draw(6)
-            }
-        }
+            )
+        )
+        pass.draw(6)
     }
 }

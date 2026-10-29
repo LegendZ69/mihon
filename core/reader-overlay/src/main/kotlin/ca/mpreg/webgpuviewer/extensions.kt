@@ -1,6 +1,8 @@
 package ca.mpreg.webgpuviewer
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.MotionDurationScale
@@ -12,6 +14,16 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.platform.LocalContext
 import kotlin.math.abs
+
+/** The activity this context belongs to, through any wrappers. */
+internal fun Context.findActivity(): Activity? {
+    var context: Context? = this
+    while (context != null) {
+        if (context is Activity) return context
+        context = (context as? ContextWrapper)?.baseContext
+    }
+    return null
+}
 
 internal object NormalMotionDurationScale : MotionDurationScale {
     override val scaleFactor: Float = 1f

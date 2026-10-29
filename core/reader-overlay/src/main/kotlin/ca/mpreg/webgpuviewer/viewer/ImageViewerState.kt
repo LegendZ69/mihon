@@ -21,17 +21,16 @@ import androidx.webgpu.GPURenderPassEncoder
 import androidx.webgpu.GPUTexture
 import androidx.webgpu.LoadOp
 import androidx.webgpu.StoreOp
-import ca.mpreg.webgpuviewer.filter.FilterChain
+import ca.mpreg.webgpuviewer.draw.Draw
+import ca.mpreg.webgpuviewer.draw.clear
+import ca.mpreg.webgpuviewer.filter.FullscreenFilterChain
 import ca.mpreg.webgpuviewer.renderer.beginRenderPassWithColorView
 import ca.mpreg.webgpuviewer.renderer.endAndClose
-import ca.mpreg.webgpuviewer.renderer.Downscaler
-import ca.mpreg.webgpuviewer.renderer.DownscalerBox
 import ca.mpreg.webgpuviewer.renderer.FrameResult
 import ca.mpreg.webgpuviewer.renderer.Hdr
-import ca.mpreg.webgpuviewer.renderer.Rescaler
+import ca.mpreg.webgpuviewer.renderer.ImageFilter
+import ca.mpreg.webgpuviewer.renderer.Sampler
 import ca.mpreg.webgpuviewer.renderer.TileRenderer
-import ca.mpreg.webgpuviewer.renderer.Upscaler
-import ca.mpreg.webgpuviewer.renderer.UpscalerArtCnn
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.Companion.dispatcher
 import ca.mpreg.webgpuviewer.transition.Transition
@@ -52,27 +51,48 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     internal val tiles = TileRenderer { invalidate() }
 
     /**
-     * How a high-quality tile that magnifies the page is resized - see [Rescaler]. Assigning
-     * drops the tiles already generated. [UpscalerArtCnn] doubles through a network first.
+     * Filters over whole images, output kept as a level of each image for the tiles to read - see
+     * [ca.mpreg.webgpuviewer.renderer.ImageFilterChain]. Assigning drops generated tiles. An instance
+     * belongs to one viewer.
      */
-    var upscaler: Upscaler
+    var imageFilters: List<ImageFilter>
+        get() = tiles.imageFilters
+        set(value) {
+            tiles.imageFilters = value
+        }
+
+    /**
+     * [imageFilters] run per high-quality tile instead and kept only as long as it: less memory, more
+     * work - see [ca.mpreg.webgpuviewer.renderer.TilesFilterChain]. Assigning drops generated tiles.
+     */
+    var tileFilters: List<ImageFilter>
+        get() = tiles.tileFilters
+        set(value) {
+            tiles.tileFilters = value
+        }
+
+    /**
+     * Resolves a high-quality tile that magnifies the page in one step - see [Sampler]. Assigning
+     * drops generated tiles.
+     */
+    var upscaler: Sampler
         get() = tiles.upscaler
         set(value) {
             tiles.upscaler = value
         }
 
-    /** How a high-quality tile that shrinks the page is resized. [DownscalerBox] is the only one. */
-    var downscaler: Downscaler
+    /** Resolves a high-quality tile that shrinks the page in one step; usually [Sampler.box]. */
+    var downscaler: Sampler
         get() = tiles.downscaler
         set(value) {
             tiles.downscaler = value
         }
 
     /**
-     * Post-processing over the finished frame - assign [FilterChain.filters] to run some. Wired
-     * to [invalidate] here, so changing a filter's settings redraws by itself.
+     * Post-processing over the finished frame - assign [FullscreenFilterChain.filters] to run some.
+     * Wired to [invalidate] here, so changing a filter's settings redraws by itself.
      */
-    val filters: FilterChain = renderer.filters.also { chain ->
+    val filters: FullscreenFilterChain = renderer.filters.also { chain ->
         chain.onInvalidate = { invalidate() }
     }
 
@@ -98,6 +118,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      * returns home - for a reader that would rather double tap did nothing at all.
      */
     var doubleTapZoomEnabled: Boolean = true
+
+    /** Off, a tap fires on lift instead of after the double tap timeout; no double tap or its drag. */
+    @Volatile
+    var doubleTapGesturesEnabled: Boolean = true
 
     /** Whether two fingers scale the page. Off leaves the page at whatever scale it is on. */
     var pinchZoomEnabled: Boolean = true
@@ -141,6 +165,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
             if (pageDelta != 0) {
                 onPageChange?.runCatching { invoke(if (isReversed) -pageDelta else pageDelta) }
+                onReachChanged?.invoke()
             }
 
             // Rotate rather than invalidate: onPageChange already moved what backs getPage, so a
@@ -164,6 +189,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         // cancel() doesn't wait: a turn started while the last one unwinds would otherwise have
         // its own transitionFromPage - set just before this call - cleared by that finally.
         val id = ++turn
+        // A far jump lands on pages nothing has had in reach yet.
+        onReachChanged?.invoke()
         animationJob = scope?.launch {
             setPageOffsetDirect(direction.toFloat())
             invalidate()
@@ -196,7 +223,16 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     var onPageChange: ((Int) -> Unit)? = null
     var onTap: ((Offset) -> Unit)? = null
+
+    /** A page's own content took the last touch down, as a button: not a tap for [onTap]. */
+    internal var contentClaimedTouch = false
     var onLongTap: ((Offset) -> Unit)? = null
+
+    /**
+     * Called on any thread when pages around the current one may have changed: turn, far jump, page on screen.
+     * Else [ComposePageHost] only notices on its idle poll, late enough for a turn to land uncaptured.
+     */
+    internal var onReachChanged: (() -> Unit)? = null
 
     /** Override for the "from" page during far navigation animation */
     var transitionFromPage: ImagePage? = null
@@ -218,6 +254,19 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     @Volatile
     protected var onScreenPages: List<ImagePage> = emptyList()
+        set(value) {
+            val was = field
+            field = value
+            // After the assignment, so a page woken by it finds itself on screen.
+            var arrived = false
+            for (page in value) {
+                if (page !in was) {
+                    page.cameOnScreen()
+                    arrived = true
+                }
+            }
+            if (arrived) onReachChanged?.invoke()
+        }
 
     internal fun isOnScreen(page: ImagePage): Boolean = onScreenPages.any { it.covers(page) }
 
@@ -253,12 +302,41 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     @Volatile
     private var reportedUnavailable = false
 
+    @Volatile
+    private var retries = 0
+
     // Wakes [collect] when there is nothing to draw. Buffered, so no send races [dirty]'s check.
     private val renderWake = Channel<Unit>(Channel.CONFLATED)
 
     fun invalidate() {
         dirty.set(true)
         renderWake.trySend(Unit)
+    }
+
+    /**
+     * Composed current page the window draws over the whole viewport, set by [ComposePageHost]. Surface
+     * frames are skipped meanwhile, else a pan or zoom draws twice. Cleared before the page moves on its
+     * own, which redraws the surface.
+     */
+    @Volatile
+    internal var coveredBy: ImagePage.Compose? = null
+        set(value) {
+            if (field === value) return
+            val was = field
+            field = value
+            if (was != null && value == null) invalidate()
+        }
+
+    /** Whether [coveredBy] still hides everything this state would draw. */
+    private fun windowCovers(): Boolean {
+        val page = coveredBy ?: return false
+        if (page.destroyed || page !== getPage(0)) {
+            // For good: coming back, the page waits for the host to draw it first and say so.
+            // No invalidate needed - this frame draws.
+            coveredBy = null
+            return false
+        }
+        return pageOffset == 0f
     }
 
     /**
@@ -287,15 +365,21 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             }
             // Drop the wake this frame's invalidate left, or going idle costs a spurious one.
             renderWake.tryReceive()
+            // Hidden under the window. Uncovering invalidates, so the surface catches up then.
+            if (windowCovers()) continue
             // Captured here, drawn on the GPU thread below - see this function's doc.
             val snapshot = captureRenderState() ?: continue
             drawing = launch(dispatcher) {
                 when (renderer.render { encoder, texture ->
                     renderSnapshot(encoder, texture, snapshot)
                 }) {
-                    FrameResult.Drawn -> reportedUnavailable = false
+                    FrameResult.Drawn -> {
+                        reportedUnavailable = false
+                        retries = 0
+                    }
 
-                    FrameResult.Retry -> invalidate()
+                    // Past the cap, park until something else invalidates.
+                    FrameResult.Retry -> if (++retries <= MAX_RETRIES) invalidate()
 
                     // No invalidate: leaving [dirty] clear parks the loop on [renderWake] rather
                     // than spinning the frame clock, and a later resize still wakes it.
@@ -311,7 +395,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     }
 
     protected open fun captureRenderState(): Any? {
-        val currentPage = getPage(0) ?: return null
+        val currentPage = getPage(0) ?: run {
+            onScreenPages = emptyList()
+            return EmptySnapshot
+        }
         val offset = pageOffset
         val adjacentPage = when {
             offset == 0f -> null
@@ -326,6 +413,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         return RenderSnapshot(
             currentPage, adjacentPage, nextPage, offset, transition, firstPos, currentPos
         )
+    }
+
+    private object EmptySnapshot
+
+    private companion object {
+        const val MAX_RETRIES = 10
     }
 
     private class RenderSnapshot(
@@ -386,6 +479,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     protected open suspend fun renderSnapshot(
         encoder: GPUCommandEncoder, texture: GPUTexture, snapshot: Any
     ) {
+        if (snapshot === EmptySnapshot) {
+            Draw.clear(encoder, texture, 0)
+            return
+        }
         val s = snapshot as RenderSnapshot
         tiles.newFrame()
         val page = s.currentPage
@@ -403,7 +500,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         // starts mostly sharp. Gated on atHome: the tile cache is keyed by (x, y, scale).
         if (covered && page is ImagePage.ImageSingle && page.atHome) {
             val next = s.nextPage as? ImagePage.ImageSingle
-            if (next != null && next.highQuality && !next.isAnimated && next.atHome) {
+            if (next != null && next.highQuality && next.atHome) {
                 tiles.prewarm(next, texture)
             }
         }
@@ -425,6 +522,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     fun cleanup() {
         animationJob?.cancel()
+        onScreenPages = emptyList()
         // Held by an object that outlives this state, so it has to be dropped by hand - but only
         // if it is still ours: a replacement viewer inits before the one it replaces cleans up.
         if (Hdr.requestFrame === invalidateCallback) Hdr.requestFrame = null

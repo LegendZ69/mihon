@@ -81,6 +81,10 @@ class NewUpdateScreen(private val releaseJson: String) : Screen() {
                 }
             },
             onRejectUpdate = navigator::pop,
+            onSkipUpdate = {
+                viewModel.skipUpdate()
+                navigator.pop()
+            },
             onCancelDownload = viewModel::cancelDownload,
             canCancelDownload = state.canCancel,
         )

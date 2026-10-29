@@ -9,6 +9,8 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.parseAs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.CacheControl
 import tachiyomi.domain.release.interactor.GetApplicationRelease
@@ -24,12 +26,14 @@ class ReleaseServiceImpl(
 ) : ReleaseService {
 
     override suspend fun latest(arguments: GetApplicationRelease.Arguments): Release? {
-        if (arguments.isTranslator) return latestTranslator(arguments)
-        val release = with(json) {
-            networkService.client
-                .newCall(request("https://api.github.com/repos/${arguments.repository}/releases/latest", arguments))
-                .awaitSuccess()
-                .parseAs<GithubRelease>()
+        if (arguments.isTranslator) return withContext(Dispatchers.IO) { latestTranslator(arguments) }
+        val release = withContext(Dispatchers.IO) {
+            with(json) {
+                networkService.client
+                    .newCall(request("https://api.github.com/repos/${arguments.repository}/releases/latest", arguments))
+                    .awaitSuccess()
+                    .parseAs<GithubRelease>()
+            }
         }
 
         val downloadLink = upstreamDownloadLink(release, arguments.isFoss, Build.SUPPORTED_ABIS.toList()) ?: return null

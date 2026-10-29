@@ -162,8 +162,12 @@ class ReservationTests(unittest.TestCase):
         self.assertFalse(release.build_needed(reservation, True, True))
 
     def test_missing_signing_configuration_stops_before_keytool_or_gradle(self):
+        store = self.repo / "fixture.keystore"
+        store.write_bytes(b"synthetic")
+        empty = self.repo / "empty.keystore"
+        empty.write_bytes(b"")
         valid = {
-            "storeFileBase64": "c3ludGhldGlj",
+            "storeFile": str(store),
             "storePassword": "fixture-store-password",
             "keyAlias": "fixture-alias",
             "keyPassword": "fixture-key-password",
@@ -180,7 +184,8 @@ class ReservationTests(unittest.TestCase):
         for change in (
             {"TRANSLATOR_SIGNING_CERT_SHA256": "0" * 64},
             {"MIHON_GITHUB_RELEASE": "false"},
-            {"storeFileBase64": "not-valid-base64!"},
+            {"storeFile": str(self.repo / "missing.keystore")},
+            {"storeFile": str(empty)},
         ):
             with self.subTest(invalid=list(change)):
                 with patch.dict(release.os.environ, {**valid, **change}, clear=True):

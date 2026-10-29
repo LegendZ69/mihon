@@ -40,7 +40,7 @@ SYNC_STAGES = {
     "reservation_push": "reservation tag push",
 }
 SYNC_REASONS = {
-    "workflow_permission": "The server rejected workflow-file updates. Configure a dedicated repository-scoped sync credential with Contents and Workflows write access.",
+    "workflow_permission": "The server rejected workflow-file updates. Store a dedicated repository-scoped sync credential with Contents and Workflows write access as the TRANSLATOR_SYNC_TOKEN repository secret.",
     "protected_ref": "The server rejected a protected reference or repository rule. Review the applicable rule; do not bypass it or force-push.",
     "non_fast_forward": "The remote reference advanced or already exists. Fetch and reconcile the current references without overwriting history or tags.",
     "authentication": "Git authentication was rejected. Check the configured sync credential and its expiry.",
@@ -529,25 +529,21 @@ def bundle(repo: Path, record: Reservation, apk: Path, output: Path, apk_metadat
 
 
 def check_signing_environment(repo: Path) -> None:
-    import base64
-    for name in ("storeFileBase64", "storePassword", "keyAlias", "keyPassword"):
+    # Gradle reads the keystore from the storeFile path, which the workflow decodes from SIGNING_KEY.
+    for name in ("storeFile", "storePassword", "keyAlias", "keyPassword"):
         if not os.environ.get(name):
             raise ReleaseError(f"Missing protected-environment secret for {name}; no debug-key fallback is allowed")
     expected = os.environ.get("TRANSLATOR_SIGNING_CERT_SHA256", "").lower().replace(":", "")
     if expected != CERT or os.environ.get("MIHON_GITHUB_RELEASE") != "true":
         raise ReleaseError("Explicit release signing mode and the preserved certificate fingerprint are required")
-    try:
-        encoded = os.environ["storeFileBase64"]
-        if len(encoded) > 2 * 1024 * 1024:
-            raise ReleaseError("Signing material exceeds the configured input limit")
-        data = base64.b64decode(encoded, validate=True)
-    except ValueError as error:
-        raise ReleaseError("Signing material is not valid base64") from error
-    with tempfile.NamedTemporaryFile() as store:
-        store.write(data)
-        store.flush()
-        result = command(repo, "keytool", "-J-Duser.language=en", "-J-Duser.country=US", "-list", "-v",
-                         "-keystore", store.name, "-storepass:env", "storePassword", "-alias", os.environ["keyAlias"])
+    store = Path(os.environ["storeFile"])
+    if not store.is_file() or store.is_symlink():
+        raise ReleaseError("The decoded signing keystore is missing")
+    size = store.stat().st_size
+    if size == 0 or size > 2 * 1024 * 1024:
+        raise ReleaseError("Signing material is empty or exceeds the configured input limit")
+    result = command(repo, "keytool", "-J-Duser.language=en", "-J-Duser.country=US", "-list", "-v",
+                     "-keystore", str(store), "-storepass:env", "storePassword", "-alias", os.environ["keyAlias"])
     match = re.search(r"SHA256:\s*([0-9A-Fa-f:]+)", result.stdout)
     if not match or match[1].lower().replace(":", "") != CERT:
         raise ReleaseError("Imported signing key does not match the preserved installation certificate")

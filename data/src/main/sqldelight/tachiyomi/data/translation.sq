@@ -251,10 +251,10 @@ usageById:
 SELECT payload FROM translation_usage WHERE id = :id;
 
 chapterSeriesIds:
-SELECT m._id FROM mangas AS m
-WHERE (m.favorite = 1 OR m.source = 0)
-AND EXISTS(SELECT 1 FROM chapters AS c WHERE c.manga_id = m._id)
-ORDER BY m.title COLLATE NOCASE, m._id;
+SELECT m.id FROM manga AS m
+WHERE (m.user_favorite_at IS NOT NULL OR m.source_id = 0)
+AND EXISTS(SELECT 1 FROM chapter AS c WHERE c.manga_id = m.id)
+ORDER BY m.remote_title COLLATE NOCASE, m.id;
 
 activeOperations:
 SELECT payload FROM translation_operations WHERE state = 'ACTIVE';

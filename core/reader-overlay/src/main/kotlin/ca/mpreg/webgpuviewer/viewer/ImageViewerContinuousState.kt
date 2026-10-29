@@ -1,7 +1,8 @@
 package ca.mpreg.webgpuviewer.viewer
 
+import android.graphics.Rect
+import android.graphics.RectF
 import ca.mpreg.webgpuviewer.renderer.overlayPass
-
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
@@ -11,6 +12,7 @@ import androidx.webgpu.GPUTexture
 import ca.mpreg.webgpuviewer.closeTo
 import ca.mpreg.webgpuviewer.draw.Draw
 import ca.mpreg.webgpuviewer.draw.clear
+import ca.mpreg.webgpuviewer.renderer.Image
 import ca.mpreg.webgpuviewer.renderer.RenderPage
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 import ca.mpreg.webgpuviewer.renderer.solveImagePlacement
@@ -19,6 +21,7 @@ import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState.Companion.MAX_VIS
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.math.round
 
 class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     companion object {
@@ -79,7 +82,12 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
 
     val doubleTapScale: Float get() = homeScale * 2f
 
-    val maxScale: Float get() = max(doubleTapScale * 2f, 4f)
+    /** Highest [scale] a gesture may settle at. Unset, twice [doubleTapScale] and at least 4. */
+    var maxScale = 0f
+        get() {
+            if (field > 0) return field
+            return max(doubleTapScale * 2f, 4f)
+        }
 
     /**
      * True while a gesture is driving zoom (pinch, drag, fling, snap-back). Gates every visible
@@ -143,9 +151,41 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
      */
     fun getPageHeight(page: ImagePage): Float {
         if (page !is ImagePage.ImageSingle) return page.height.toFloat()
-        val pageWidth = page.width
+        val crop = cropOf(page)
+        val pageWidth = crop?.width() ?: page.width
         if (pageWidth <= 0 || width <= 0) return page.height.toFloat()
-        return page.height * (width.toFloat() / pageWidth)
+        return (crop?.height() ?: page.height) * (width.toFloat() / pageWidth)
+    }
+
+    /**
+     * Cut each page to its measured trim: the trim fills the width, its slot is the trim's
+     * height, and nothing outside it draws. Unlike the paged viewer, no zoom is involved.
+     */
+    var cropBorders: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            currentPageHeight = null
+            invalidate()
+        }
+
+    /**
+     * [crop], in [page]'s pixels, in [image]'s - placed [offsetX] from the page's centre and
+     * [imageScale] times over, as [ImagePage.ImageSingle.forEachImage] gives it.
+     */
+    private fun cropInImage(
+        crop: Rect, page: ImagePage.ImageSingle, image: Image, offsetX: Float, imageScale: Float,
+    ): RectF {
+        fun x(px: Int) = (px - page.width / 2f - offsetX) / imageScale - image.x + image.width / 2f
+        fun y(py: Int) = (py - page.height / 2f) / imageScale - image.y + image.height / 2f
+        return RectF(x(crop.left), y(crop.top), x(crop.right), y(crop.bottom))
+    }
+
+    /** The part of [page] drawn, in its own pixels; null for all of it. */
+    private fun cropOf(page: ImagePage.ImageSingle): Rect? {
+        if (!cropBorders) return null
+        val trim = page.image?.trim ?: return null
+        return if (trim.width() > 0 && trim.height() > 0) Rect(trim) else null
     }
 
     /**
@@ -244,7 +284,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             while (guard++ < MAX_PAGE_WALK) {
                 val page = getPage(0) ?: return
                 val pageHeight = getPageSlotHeight(page)
-                if (scrollYInternal <= pageHeight || pageHeight <= 0f) break
+                // Unsized (composed, pre-measure): stepped past once the scroll is beyond its top.
+                if (scrollYInternal <= pageHeight) break
                 if (getPage(1) == null) {
                     scrollYInternal = pageHeight.toDouble()
                     break
@@ -529,6 +570,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         val docTop: Float,
         val pageHeight: Float,
         val contentHeight: Float,
+        /** As [getPageHeight] measured it, so the draw places what the layout sized. */
+        val crop: Rect?,
     )
 
     private class ContinuousRenderSnapshot(
@@ -542,6 +585,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         val backgroundColor: Int,
         val readThrough: ImagePage?,
     )
+
+    private fun cropFor(page: ImagePage) = (page as? ImagePage.ImageSingle)?.let(::cropOf)
 
     override fun captureRenderState(): Any {
         val snapshot = captureLocked()
@@ -586,6 +631,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         val cameraDocY = anchorDocY - y0 + 0.5f * screenH / s
 
         val pages = mutableListOf<VisiblePage>()
+        // Undecoded ones too: [pages] skips them, and their decode's invalidate must still land.
+        val visible = mutableListOf<ImagePage>()
 
         // Visible band in unscaled page space, from page 0's top - see cameraDocY.
         val visTop = 0f
@@ -620,12 +667,15 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             if (scrolledThrough == null && isScrolledThrough(yTop, contentHeight)) {
                 scrolledThrough = page
             }
+            visible.add(page)
             // Walked upward, so each goes in front of the last - top to bottom, as the
             // forward walk appends.
-            if (page.isDecoded) {
-                pages.add(0, VisiblePage(page, docTopBack, pageHeight, contentHeight))
+            if (page.isDecoded && contentHeight > 0f) {
+                pages.add(
+                    0, VisiblePage(page, docTopBack, pageHeight, contentHeight, cropFor(page))
+                )
             }
-            if (pageHeight <= 0f) break
+            // Unsized (composed, pre-measure): skip rather than end the walk, or every later page vanishes.
             iBack--
         }
 
@@ -651,19 +701,20 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             // Walking down, so a later match replaces whatever the backward walk found.
             if (isScrolledThrough(y, contentHeight)) scrolledThrough = page
 
-            if (y + pageHeight > visTop && page.isDecoded) {
-                pages.add(VisiblePage(page, docTop, pageHeight, contentHeight))
+            if (y + pageHeight > visTop) {
+                visible.add(page)
+                if (page.isDecoded && contentHeight > 0f) {
+                    pages.add(VisiblePage(page, docTop, pageHeight, contentHeight, cropFor(page)))
+                }
             }
 
-            // A zero-height page never advances y, so stop.
-            if (pageHeight <= 0f) break
-
+            // Zero height advances nothing and the walk is bounded by MAX_VISIBLE_PAGES: step past, don't stop.
             prevHeight = pageHeight
             y += pageHeight
             i++
         }
 
-        onScreenPages = pages.map { it.page }
+        onScreenPages = visible
         pagesBelow = below
         pagesAbove = above
 
@@ -675,6 +726,62 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             pages, scale, offsetX, cameraDocY, isScaleAnimating || isFlinging, backgroundColor,
             scrolledThrough
         )
+    }
+
+    /**
+     * [page]'s live top-left in screen pixels and screen pixels per page pixel; null beyond
+     * [MAX_VISIBLE_PAGES] below page 0.
+     *
+     * [renderSnapshot]'s arithmetic for an uncropped [ImagePage.ImageSingle], against the live position:
+     * [ComposePageHost] draws over the surface's snapshot, so both must hit the same pixels, and a captured
+     * frame lags the scroll.
+     */
+    internal fun screenPlacement(page: ImagePage): PagePlacement? = synchronized(scrollLock) {
+        if (page.width <= 0 || width <= 0 || height <= 0) return null
+        val docTop = docTopOf(page) ?: return null
+
+        val screenW = width.toFloat()
+        val screenH = height.toFloat()
+        val s = safeScale
+        // As captureLocked and renderSnapshot have them, term for term.
+        val y0 = (-scrollYInternal + slideOffset).toFloat()
+        val cameraDocY = anchorDocY - y0 + 0.5f * screenH / s
+        val anchorX = screenW / 2f + s * (offsetX * screenW + WebGpuRenderer.offsetX * screenW)
+        val anchorY = screenH / 2f - s * cameraDocY + s * WebGpuRenderer.offsetY * screenH
+
+        PagePlacement(
+            left = composeLeft(anchorX, s, screenW),
+            top = composeTop(anchorY, s, docTop),
+            scale = s * screenW / page.width,
+        )
+    }
+
+    /*
+     * An [ImagePage.Compose] page's top-left, snapped to whole pixels as the window snaps its own draw;
+     * otherwise the snapshot sits up to half a pixel off, and softer, while both show. Paged placements
+     * are already whole.
+     */
+    private fun composeLeft(anchorX: Float, scale: Float, screenW: Float) =
+        round(anchorX - scale * screenW / 2f)
+
+    private fun composeTop(anchorY: Float, scale: Float, docTop: Float) =
+        round(anchorY + scale * docTop)
+
+    /**
+     * [page]'s slot top in document space, walked off [anchorDocY] as [captureLocked] does.
+     *
+     * Downward only: a page above page 0 is on screen only while [animateSlideIn] slides it, and nothing places
+     * a sliding page.
+     */
+    private fun docTopOf(page: ImagePage): Float? {
+        var docTop = anchorDocY
+        for (i in 0..MAX_VISIBLE_PAGES) {
+            val candidate = getPage(i) ?: return null
+            if (candidate === page) return docTop
+            // An unsized page adds nothing, as in the render walk.
+            docTop += getPageSlotHeight(candidate)
+        }
+        return null
     }
 
     override suspend fun renderSnapshot(
@@ -709,12 +816,17 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                     // image buffers gone, and drawing one throws.
                     if (page.destroyed || !page.isDecoded || page.width <= 0) return@forEach
 
-                    val pageScale = dstW / page.width
+                    // A crop fills the width, and the page's own centre sits off the crop's.
+                    val crop = vp.crop
+                    val pageScale = dstW / (crop?.width() ?: page.width)
+                    val shiftX = crop?.let { pageScale * (page.width / 2f - it.exactCenterX()) }
+                        ?: 0f
+                    val shiftY = crop?.let { pageScale * (page.height / 2f - it.exactCenterY()) }
+                        ?: 0f
 
                     // Tiles first, marking the stencil; the sampler below shades only what is
-                    // left, and nothing once the draw reports full coverage. Animated pages
-                    // never get tiles.
-                    val covered = !page.isAnimated && tiles.draw(
+                    // left, and nothing once the draw reports full coverage.
+                    val covered = tiles.draw(
                         pass,
                         page,
                         texture,
@@ -723,30 +835,52 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                         vp.contentHeight,
                         s.offsetX,
                         s.scale,
-                        s.suppressGeneration
+                        s.suppressGeneration,
+                        crop,
                     )
                     if (!covered) {
                         page.forEachImage { image, srcOffsetX, sideScale ->
                             if (image.mipmaps.isEmpty()) return@forEachImage
                             val imageScale = pageScale * s.scale * sideScale
                             val docCenterX =
-                                pageScale * (srcOffsetX + sideScale * image.x)
-                            val docCenterY = vp.docTop + 0.5f * vp.contentHeight +
+                                shiftX + pageScale * (srcOffsetX + sideScale * image.x)
+                            val docCenterY = vp.docTop + 0.5f * vp.contentHeight + shiftY +
                                     pageScale * sideScale * image.y
-                            val targetX = anchorX + s.scale * docCenterX
-                            val targetY = anchorY + s.scale * docCenterY
+                            // A composed page lands where the window draws it - see [composeLeft].
+                            val compose = page is ImagePage.Compose
+                            val targetX = if (compose) {
+                                composeLeft(
+                                    anchorX,
+                                    s.scale,
+                                    dstW
+                                ) + 0.5f * imageScale * image.width
+                            } else {
+                                anchorX + s.scale * docCenterX
+                            }
+                            val targetY = if (compose) {
+                                composeTop(
+                                    anchorY,
+                                    s.scale,
+                                    vp.docTop
+                                ) + 0.5f * imageScale * image.height
+                            } else {
+                                anchorY + s.scale * docCenterY
+                            }
                             val (x, y) = solveImagePlacement(
                                 targetX, targetY, imageScale, image, dstW, dstH
                             )
-                            // Non-highQuality content skips linear light; an animated page
-                            // swaps images every frame, so it takes the fast sampler too.
-                            if (page.isAnimated || page.highQuality) {
-                                RenderPage.renderFast(pass, image, texture, x, y, imageScale)
-                            } else {
-                                RenderPage.renderFast(
-                                    pass, image, texture, x, y, imageScale, linear = false
-                                )
-                            }
+                            RenderPage.renderFast(
+                                pass, image, texture, x, y, imageScale,
+                                src = crop?.let {
+                                    cropInImage(
+                                        it,
+                                        page,
+                                        image,
+                                        srcOffsetX,
+                                        sideScale
+                                    )
+                                },
+                            )
                         }
                     }
 
@@ -773,13 +907,29 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             overlayPass(encoder, texture) { pass ->
                 s.pages.forEach { vp ->
                     val page = vp.page as? ImagePage.ImageSingle ?: return@forEach
-                    if (page.destroyed || page.width <= 0) return@forEach
-                    val pageScale = dstW / page.width
+                    if (page.destroyed || !page.hasOverlay || page.width <= 0) return@forEach
+                    // Same placement as the image draw above, including a crop's scale and shift.
+                    val crop = vp.crop
+                    val pageScale = dstW / (crop?.width() ?: page.width)
+                    val shiftX = crop?.let { pageScale * (page.width / 2f - it.exactCenterX()) } ?: 0f
+                    val shiftY = crop?.let { pageScale * (page.height / 2f - it.exactCenterY()) } ?: 0f
+                    // A cropped page must not spill its regions over its neighbours.
+                    val bandTop = (anchorY + s.scale * vp.docTop).coerceIn(0f, dstH)
+                    val bandBottom = (anchorY + s.scale * (vp.docTop + vp.contentHeight)).coerceIn(0f, dstH)
+                    val bandLeft = (anchorX - s.scale * dstW / 2f).coerceIn(0f, dstW)
+                    val bandRight = (anchorX + s.scale * dstW / 2f).coerceIn(0f, dstW)
+                    if (bandBottom - bandTop < 1f || bandRight - bandLeft < 1f) return@forEach
+                    pass.setScissorRect(
+                        bandLeft.toInt(),
+                        bandTop.toInt(),
+                        (bandRight - bandLeft).toInt().coerceAtLeast(1),
+                        (bandBottom - bandTop).toInt().coerceAtLeast(1),
+                    )
                     page.forEachOverlay { image, offsetX, sideScale, overlay ->
                         val imageScale = pageScale * s.scale * sideScale
-                        val targetX = anchorX + s.scale * pageScale * (offsetX + sideScale * image.x)
+                        val targetX = anchorX + s.scale * (shiftX + pageScale * (offsetX + sideScale * image.x))
                         val targetY = anchorY + s.scale *
-                                (vp.docTop + 0.5f * vp.contentHeight + pageScale * sideScale * image.y)
+                                (vp.docTop + 0.5f * vp.contentHeight + shiftY + pageScale * sideScale * image.y)
                         val (x, y) = solveImagePlacement(targetX, targetY, imageScale, image, dstW, dstH)
                         overlay.draw(pass, texture, image, x, y, imageScale)
                     }

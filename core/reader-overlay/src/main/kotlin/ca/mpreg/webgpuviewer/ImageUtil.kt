@@ -2,7 +2,10 @@ package ca.mpreg.webgpuviewer
 
 import ca.mpreg.webgpuviewer.ImageUtil.applyGainmapNative
 import ca.mpreg.webgpuviewer.ImageUtil.resize
+import ca.mpreg.webgpuviewer.ImageUtil.resizeF16
 import ca.mpreg.webgpuviewer.ImageUtil.resizeLinearAreaNative
+import ca.mpreg.webgpuviewer.ImageUtil.resizeLinearAreaNativeF16
+import ca.mpreg.webgpuviewer.ImageUtil.rotateQuarterNative
 import ca.mpreg.webgpuviewer.ImageUtil.toneMapToSdrNative
 import java.nio.ByteBuffer
 
@@ -27,6 +30,16 @@ object ImageUtil {
         height: Int
     )
 
+    /** As [resizeLinearAreaNative], to [dstWidth] x [dstHeight] at 4 B/px. */
+    external fun resizeLinearAreaToNative(
+        pixels: ByteBuffer,
+        dstPixels: ByteBuffer,
+        width: Int,
+        height: Int,
+        dstWidth: Int,
+        dstHeight: Int
+    )
+
     /**
      * [resizeLinearAreaNative] over extended-sRGB RGBA half-float, for an HDR image's mipmaps.
      *
@@ -40,6 +53,16 @@ object ImageUtil {
         height: Int
     )
 
+    /** As [resizeLinearAreaNativeF16], to [dstWidth] x [dstHeight] at 8 B/px. */
+    external fun resizeLinearAreaToNativeF16(
+        pixels: ByteBuffer,
+        dstPixels: ByteBuffer,
+        width: Int,
+        height: Int,
+        dstWidth: Int,
+        dstHeight: Int
+    )
+
     /**
      * For showing an HDR image on an SDR swapchain. The image's own brightest pixel lands on
      * white and the roll-off starts as late as that peak allows, so a dim HDR frame keeps
@@ -50,7 +73,12 @@ object ImageUtil {
         dstPixels: ByteBuffer,
         width: Int,
         height: Int,
+        /** Fitted to this rather than the pixels' own, when at least 1. */
+        sourcePeak: Float,
     )
+
+    /** Brightest linear channel of extended-sRGB half-float [pixels], at least 1. */
+    external fun measureHdrPeakNative(pixels: ByteBuffer, width: Int, height: Int): Float
 
     /**
      * Combine an SDR base with its unapplied gain map into extended-sRGB half-float.
@@ -96,6 +124,8 @@ object ImageUtil {
         width: Int,
         height: Int,
         targetPeak: Float,
+        /** As [toneMapToSdrNative]'s. */
+        sourcePeak: Float,
     ): Float
 
     /**
@@ -148,11 +178,29 @@ object ImageUtil {
         return output
     }
 
+    /** [resize] to [dstWidth] x [dstHeight] rather than half. */
+    fun resize(
+        source: ByteBuffer, width: Int, height: Int, dstWidth: Int, dstHeight: Int
+    ): ByteBuffer {
+        val output = directBuffer(dstWidth, dstHeight, 4)
+        resizeLinearAreaToNative(source, output, width, height, dstWidth, dstHeight)
+        return output
+    }
+
     /** [resize] for extended-sRGB half-float pixels, which are twice as wide. */
     fun resizeF16(source: ByteBuffer, width: Int, height: Int): ByteBuffer {
         // Half by half at 8 B/px, so two bytes per source pixel.
         val output = directBuffer(width, height, 2)
         resizeLinearAreaNativeF16(source, output, width, height)
+        return output
+    }
+
+    /** [resizeF16] to [dstWidth] x [dstHeight] rather than half. */
+    fun resizeF16(
+        source: ByteBuffer, width: Int, height: Int, dstWidth: Int, dstHeight: Int
+    ): ByteBuffer {
+        val output = directBuffer(dstWidth, dstHeight, 8)
+        resizeLinearAreaToNativeF16(source, output, width, height, dstWidth, dstHeight)
         return output
     }
 
@@ -186,9 +234,11 @@ object ImageUtil {
     }
 
     /** [toneMapToSdrNative] into a freshly allocated RGBA8 buffer. */
-    fun toneMapToSdr(source: ByteBuffer, width: Int, height: Int): ByteBuffer {
+    fun toneMapToSdr(
+        source: ByteBuffer, width: Int, height: Int, sourcePeak: Float = 0f
+    ): ByteBuffer {
         val output = directBuffer(width, height, 4)
-        toneMapToSdrNative(source, output, width, height)
+        toneMapToSdrNative(source, output, width, height, sourcePeak)
         return output
     }
 }

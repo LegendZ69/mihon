@@ -59,7 +59,7 @@ private data class ChapterChoice(
     val error get() = job?.state == TranslationJobState.FAILED
 
     // LocalSource sets dateUpload from chapterFile.lastModified(). Other fallbacks are stable.
-    val newest get() = chapter.dateUpload.takeIf { it > 0 } ?: chapter.dateFetch.takeIf { it > 0 } ?: 0
+    val newest get() = chapter.dateUpload ?: chapter.dateFetch
 }
 
 class TranslationChapterPickerScreen(private val mangaIds: List<Long> = emptyList()) : Screen() {

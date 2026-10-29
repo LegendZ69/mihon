@@ -4,27 +4,36 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.graphics.Rect
-import android.util.Half
 import ca.mpreg.imagedecoder.ImageDecoder
-import ca.mpreg.webgpuviewer.decodeNextReaderFrame
+import ca.mpreg.webgpuviewer.ReaderPixelBuffer
+import ca.mpreg.webgpuviewer.readerSourceOrientation
+import ca.mpreg.webgpuviewer.restoreReaderSourceFrame
 import com.davemorrissey.labs.subscaleview.CropBorders
 import com.davemorrissey.labs.subscaleview.provider.InputProvider
 import java.nio.ByteOrder
-import kotlin.math.roundToInt
+import kotlin.math.ceil
+import kotlin.math.sqrt
+
+// Border detection runs on a copy shrunk to about this many pixels (16 MB of RGBA).
+private const val BORDER_PIXELS = 4_000_000.0
 
 class Decoder(
     private val cropBorders: Boolean,
 ) : ImageRegionDecoder {
 
-    // Pixel data copied into JVM heap memory (RGBA, 4 bytes per pixel).
-    // The native decoder and its encoded image are closed immediately after this copy.
-    private var pixels: ByteArray? = null
+    // Kept open so each tile decodes only its own region; ImageDecoder serialises the calls.
+    @Volatile
+    private var decoder: ImageDecoder? = null
+
+    // Raw-coordinate RGBA8 copy of an Exif-oriented image. The decoder applies Exif orientation, but
+    // translation geometry is in the file's raw pixel coordinates, so such an image is shown unrotated.
+    @Volatile
+    private var rawPixels: ReaderPixelBuffer? = null
+
     private var imageWidth: Int = 0
     private var imageHeight: Int = 0
 
-    // When cropBorders is enabled these track the detected crop rect so that
-    // init() can report the cropped dimensions to SSIV while decodeRegion()
-    // translates tile coordinates back into the full-image pixel buffer.
+    // The crop rect SSIV lays tiles out against, in full-image coordinates.
     private var cropLeft: Int = 0
     private var cropTop: Int = 0
     private var cropWidth: Int = 0
@@ -34,51 +43,92 @@ class Decoder(
     val sourceImageHeight: Int get() = imageHeight
     val sourceCrop: Rect get() = Rect(cropLeft, cropTop, cropLeft + cropWidth, cropTop + cropHeight)
 
-    @Volatile
-    private var recycled = false
-
     /**
-     * Initialise the decoder. Opens the stream, decodes the full image once to obtain
-     * dimensions and a safe copy of the pixel data, then returns those dimensions.
-     * If cropBorders is enabled the native border-detection is run and the cropped
-     * dimensions are returned so SSIV lays out tiles against the trimmed size.
+     * Opens the image and returns its size, or the size of its content without borders when
+     * cropBorders is set, found on a shrunk copy of the whole image.
      */
     override fun init(context: Context, provider: InputProvider): Point {
-        val copy = provider.openStream().use { inputStream ->
+        // Else the old decoder's native memory waits for the GC.
+        decoder?.close()
+        decoder = null
+        rawPixels = null
+        val dec = provider.openStream().use { inputStream ->
             checkNotNull(inputStream) { "InputProvider returned null stream" }
-            ImageDecoder.new(inputStream).use { decoder ->
-                val result = decoder.decodeNextReaderFrame()
-                imageWidth = result.width
-                imageHeight = result.height
-                val buffer = result.image.duplicate().order(ByteOrder.nativeOrder())
-                // Classic tiles are SDR ARGB_8888; decoder 14 may supply extended-sRGB half floats.
-                // Keep the source layout, clamping the SDR rendition instead of reading half bytes as RGBA8.
-                if (result.isHdr) {
-                    ByteArray(Math.multiplyExact(Math.multiplyExact(imageWidth, imageHeight), 4)) {
-                        val sample = Half.toFloat(buffer.short)
-                        (sample.coerceIn(0f, 1f).takeUnless { it.isNaN() }?.times(255f)?.roundToInt() ?: 0).toByte()
-                    }
-                } else {
-                    ByteArray(buffer.remaining()).also { buffer.get(it) }
-                }
-            }
+            ImageDecoder.open(inputStream)
         }
-        pixels = copy
 
-        // Default crop rect = full image
+        if (dec.readerSourceOrientation() != 1) {
+            return dec.use(::initRaw)
+        }
+
+        imageWidth = dec.width
+        imageHeight = dec.height
         cropLeft = 0
         cropTop = 0
-        cropWidth = imageWidth
-        cropHeight = imageHeight
+        cropWidth = dec.width
+        cropHeight = dec.height
+
+        // Border detection reads 8-bit RGBA, so HDR (half-float) images are left uncropped
+        if (cropBorders && !dec.isHdr) {
+            try {
+                // The full page could be hundreds of MB on the Java heap.
+                val pixels = dec.width.toDouble() * dec.height
+                val sample = ceil(sqrt(pixels / BORDER_PIXELS)).toInt().coerceAtLeast(1)
+                val (borders, sw, sh) = dec.decode(null, sample).use { frame ->
+                    Triple(
+                        CropBorders.findCropBorders(frame.toByteArray(), frame.width, frame.height),
+                        frame.width,
+                        frame.height,
+                    )
+                }
+                val l = borders.getOrElse(0) { 0 }
+                val t = borders.getOrElse(1) { 0 }
+                val w = borders.getOrElse(2) { 0 }
+                val h = borders.getOrElse(3) { 0 }
+                val ok = borders.size >= 4
+                if (ok && w > 0 && h > 0 && l >= 0 && t >= 0 && l + w <= sw && t + h <= sh) {
+                    // A sampled pixel wider each way, so gaps between samples never cut content.
+                    val slack = if (sample > 1) 1 else 0
+                    val left = ((l - slack).coerceAtLeast(0).toLong() * sample).toInt()
+                    val top = ((t - slack).coerceAtLeast(0).toLong() * sample).toInt()
+                    val right = ((l + w + slack).toLong() * sample).coerceAtMost(dec.width.toLong()).toInt()
+                    val bottom = ((t + h + slack).toLong() * sample).coerceAtMost(dec.height.toLong()).toInt()
+                    if (right > left && bottom > top) {
+                        cropLeft = left
+                        cropTop = top
+                        cropWidth = right - left
+                        cropHeight = bottom - top
+                    }
+                }
+            } catch (e: Throwable) {
+                dec.close()
+                throw e
+            }
+        }
+
+        decoder = dec
+        return Point(cropWidth, cropHeight)
+    }
+
+    /** Decodes the whole first frame once and keeps its raw-coordinate RGBA8 pixels for [decodeRegion]. */
+    private fun initRaw(dec: ImageDecoder): Point {
+        val raw = dec.decodeNext().use { frame -> restoreReaderSourceFrame(dec, frame, sdr8 = true) }
+        imageWidth = raw.width
+        imageHeight = raw.height
+        cropLeft = 0
+        cropTop = 0
+        cropWidth = raw.width
+        cropHeight = raw.height
 
         if (cropBorders) {
-            val borders = CropBorders.findCropBorders(copy, imageWidth, imageHeight)
-            val l = borders[0];
-            val t = borders[1]
-            val w = borders[2];
-            val h = borders[3]
-            // Only apply if the detected rect is non-empty and smaller than the full image
-            if (w > 0 && h > 0 && (l != 0 || t != 0 || w != imageWidth || h != imageHeight)) {
+            val buffer = raw.pixels.duplicate()
+            val copy = ByteArray(buffer.remaining()).also { buffer.get(it) }
+            val borders = CropBorders.findCropBorders(copy, raw.width, raw.height)
+            val l = borders.getOrElse(0) { 0 }
+            val t = borders.getOrElse(1) { 0 }
+            val w = borders.getOrElse(2) { 0 }
+            val h = borders.getOrElse(3) { 0 }
+            if (borders.size >= 4 && w > 0 && h > 0 && l >= 0 && t >= 0 && l + w <= raw.width && t + h <= raw.height) {
                 cropLeft = l
                 cropTop = t
                 cropWidth = w
@@ -86,70 +136,57 @@ class Decoder(
             }
         }
 
+        rawPixels = raw
         return Point(cropWidth, cropHeight)
     }
 
     /**
-     * Decode a region of the image with the given sample size.
-     *
-     * [sRect] is expressed in the cropped coordinate space that SSIV knows about.
-     * We translate it back into the full pixel buffer by adding [cropLeft]/[cropTop],
-     * then extract the region stepping [sampleSize] source pixels per output pixel.
-     *
-     * @param sRect      Source image rectangle to decode (in cropped coordinates).
-     * @param sampleSize Sample size (1 = full res, 2 = half res, etc.).
-     * @return The decoded region bitmap.
+     * Decodes [sRect], given in the cropped coordinates SSIV knows about, shrunk by
+     * [sampleSize] as it decodes: only the shrunk tile is ever held.
      */
     override fun decodeRegion(sRect: Rect, sampleSize: Int): Bitmap {
-        val src = checkNotNull(pixels) { "Decoder not initialized or recycled" }
-        check(!recycled) { "Decoder has been recycled" }
+        val region = Rect(
+            (sRect.left + cropLeft).coerceAtLeast(cropLeft),
+            (sRect.top + cropTop).coerceAtLeast(cropTop),
+            (sRect.right + cropLeft).coerceAtMost(cropLeft + cropWidth),
+            (sRect.bottom + cropTop).coerceAtMost(cropTop + cropHeight),
+        )
+        require(!region.isEmpty) { "region $sRect is outside the ${cropWidth}x$cropHeight image" }
 
-        // Translate from cropped-image coords to full-image coords
-        val srcLeft = (sRect.left + cropLeft).coerceAtLeast(0)
-        val srcTop = (sRect.top + cropTop).coerceAtLeast(0)
-        val srcRight = (sRect.right + cropLeft).coerceAtMost(imageWidth)
-        val srcBottom = (sRect.bottom + cropTop).coerceAtMost(imageHeight)
+        rawPixels?.let { return it.regionBitmap(region, sampleSize.coerceAtLeast(1)) }
 
-        val regionWidth = srcRight - srcLeft
-        val regionHeight = srcBottom - srcTop
-        val outWidth = (regionWidth + sampleSize - 1) / sampleSize
-        val outHeight = (regionHeight + sampleSize - 1) / sampleSize
-
-        val outPixels = IntArray(outWidth * outHeight)
-        val stride = imageWidth * 4  // 4 bytes per RGBA pixel
-
-        for (outY in 0 until outHeight) {
-            val sy = srcTop + outY * sampleSize
-            if (sy >= imageHeight) break
-            for (outX in 0 until outWidth) {
-                val sx = srcLeft + outX * sampleSize
-                if (sx >= imageWidth) continue
-
-                val i = sy * stride + sx * 4
-                val r = src[i].toInt() and 0xFF
-                val g = src[i + 1].toInt() and 0xFF
-                val b = src[i + 2].toInt() and 0xFF
-                val a = src[i + 3].toInt() and 0xFF
-
-                outPixels[outY * outWidth + outX] = (a shl 24) or (r shl 16) or (g shl 8) or b
-            }
-        }
-
-        return Bitmap.createBitmap(outPixels, outWidth, outHeight, Bitmap.Config.ARGB_8888)
+        val dec = checkNotNull(decoder) { "Decoder not initialized or recycled" }
+        return dec.decodeToBitmap(region, sampleSize.coerceAtLeast(1))
     }
 
-    /**
-     * Returns true if the decoder has been successfully initialized and not yet recycled.
-     */
-    override fun isReady(): Boolean {
-        return pixels != null && !recycled
-    }
+    override fun isReady(): Boolean = decoder != null || rawPixels != null
 
-    /**
-     * Release resources held by this decoder.
-     */
     override fun recycle() {
-        recycled = true
-        pixels = null
+        decoder?.close()
+        decoder = null
+        rawPixels = null
     }
+}
+
+/** Nearest-neighbour samples of RGBA8 [region], one source pixel in [sampleSize] each way. */
+private fun ReaderPixelBuffer.regionBitmap(region: Rect, sampleSize: Int): Bitmap {
+    val source = pixels.duplicate().order(ByteOrder.nativeOrder())
+    val outWidth = (region.width() + sampleSize - 1) / sampleSize
+    val outHeight = (region.height() + sampleSize - 1) / sampleSize
+    val out = IntArray(outWidth * outHeight)
+    for (outY in 0 until outHeight) {
+        val sy = region.top + outY * sampleSize
+        if (sy >= height) break
+        for (outX in 0 until outWidth) {
+            val sx = region.left + outX * sampleSize
+            if (sx >= width) continue
+            val i = (sy * width + sx) * 4
+            val r = source.get(i).toInt() and 0xFF
+            val g = source.get(i + 1).toInt() and 0xFF
+            val b = source.get(i + 2).toInt() and 0xFF
+            val a = source.get(i + 3).toInt() and 0xFF
+            out[outY * outWidth + outX] = (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+    return Bitmap.createBitmap(out, outWidth, outHeight, Bitmap.Config.ARGB_8888)
 }

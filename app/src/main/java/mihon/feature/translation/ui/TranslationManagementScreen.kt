@@ -803,7 +803,7 @@ private fun ArchiveTargetDialog(onDismiss: () -> Unit, onSelected: (ArchiveTarge
                             chapter.id,
                             manga.title,
                             chapter.name + if (manga.source == 0L) " · Local source" else "",
-                            chapter.dateUpload.takeIf { it > 0 } ?: chapter.dateFetch,
+                            (chapter.dateUpload ?: chapter.dateFetch).toEpochMilliseconds(),
                         )
                     }
                 }.sortedWith(

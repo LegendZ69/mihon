@@ -22,7 +22,7 @@ import ca.mpreg.webgpuviewer.renderer.Fullscreen.VERTEX
 /**
  * One triangle covering the whole destination, for passes that are a function of every pixel
  * rather than a drawing of anything - [ca.mpreg.webgpuviewer.filter.FilterFullscreen]'s output
- * filters and [UpscalerArtCnn]'s halo crop.
+ * filters and [TileResize].
  *
  * Here rather than beside the filters so both can reach it: the filter package already depends on
  * this one, and pointing it back would make a cycle.

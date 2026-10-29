@@ -23,6 +23,7 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import dev.zacsweers.metrox.viewmodel.assistedMetroViewModel
 import eu.kanade.domain.manga.model.hasCustomCover
 import eu.kanade.domain.manga.model.toSManga
+import eu.kanade.presentation.browse.components.RemoveMangaDialog
 import eu.kanade.presentation.category.components.ChangeCategoryDialog
 import eu.kanade.presentation.components.NavigatorAdaptiveSheet
 import eu.kanade.presentation.manga.ChapterSettingsDialog
@@ -52,14 +53,15 @@ import eu.kanade.tachiyomi.util.system.copyToClipboard
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import mihon.feature.migration.config.MigrationConfigScreen
 import mihon.feature.migration.dialog.MigrateMangaDialog
 import mihon.feature.translation.ui.TranslationScreen
 import mihon.feature.translation.ui.translationControlDestination
-import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.chapter.model.Chapter
 import tachiyomi.domain.library.service.LibraryPreferences
@@ -99,7 +101,7 @@ class MangaScreen(
         LaunchedEffect(successState.manga, viewModel.source) {
             if (isHttpSource) {
                 try {
-                    withIOContext {
+                    withContext(Dispatchers.IO) {
                         assistUrl = getMangaUrl(viewModel.manga, viewModel.source)
                     }
                 } catch (e: Exception) {
@@ -118,8 +120,13 @@ class MangaScreen(
             navigateUp = navigator::pop,
             onChapterClicked = { openChapter(context, it) },
             onDownloadChapter = viewModel::runChapterDownloadActions.takeIf { !successState.source.isLocalOrStub() },
+            downloadProgressProvider = viewModel::getDownloadProgress,
             onAddToLibraryClicked = {
-                viewModel.toggleFavorite()
+                if (successState.manga.favorite) {
+                    viewModel.showRemoveFromLibraryDialog()
+                } else {
+                    viewModel.toggleFavorite()
+                }
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             },
             onWebViewClicked = {
@@ -167,7 +174,7 @@ class MangaScreen(
                 when (action) {
                     LibraryPreferences.ChapterSwipeAction.Translate -> scope.launch {
                         try {
-                            val destination = withIOContext {
+                            val destination = withContext(Dispatchers.IO) {
                                 translationControlDestination(context.appGraph, mangaId, listOf(item.chapter.id))
                             }
                             navigator.push(destination)
@@ -191,6 +198,15 @@ class MangaScreen(
         val onDismissRequest = { viewModel.dismissDialog() }
         when (val dialog = successState.dialog) {
             null -> {}
+            MangaViewModel.Dialog.RemoveFromLibrary -> {
+                RemoveMangaDialog(
+                    onDismissRequest = onDismissRequest,
+                    onConfirm = {
+                        if (successState.manga.favorite) viewModel.toggleFavorite()
+                    },
+                    mangaToRemove = successState.manga,
+                )
+            }
             is MangaViewModel.Dialog.ChangeCategory -> {
                 ChangeCategoryDialog(
                     initialSelection = dialog.initialSelection,
@@ -275,6 +291,7 @@ class MangaScreen(
                             when (it) {
                                 EditCoverAction.EDIT -> getContent.launch("image/*")
                                 EditCoverAction.DELETE -> vm.deleteCustomCover(context)
+                                EditCoverAction.ADD_TO_LIBRARY -> vm.addToLibraryWarning(context)
                             }
                         },
                         onDismissRequest = onDismissRequest,

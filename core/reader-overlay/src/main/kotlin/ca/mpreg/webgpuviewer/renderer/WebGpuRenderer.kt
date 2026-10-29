@@ -13,6 +13,7 @@ import androidx.webgpu.GPUDevice
 import androidx.webgpu.GPUDeviceDescriptor
 import androidx.webgpu.GPUInstance
 import androidx.webgpu.GPUInstanceDescriptor
+import androidx.webgpu.GPULimits
 import androidx.webgpu.GPURequestAdapterOptions
 import androidx.webgpu.GPUSurface
 import androidx.webgpu.GPUSurfaceConfiguration
@@ -24,12 +25,13 @@ import androidx.webgpu.TextureUsage
 import androidx.webgpu.UncapturedErrorCallback
 import androidx.webgpu.helper.Util.windowFromSurface
 import androidx.webgpu.helper.initLibrary
-import ca.mpreg.webgpuviewer.filter.FilterChain
+import ca.mpreg.webgpuviewer.filter.FullscreenFilterChain
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.Companion.mutex
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.Companion.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -52,6 +54,13 @@ class WebGpuRenderer {
         lateinit var instance: GPUInstance
         lateinit var adapter: GPUAdapter
         lateinit var device: GPUDevice
+
+        /**
+         * The device's real texture size ceiling - requested at creation, since Compatibility mode
+         * otherwise caps it at 4096 whatever the hardware can do.
+         */
+        var maxTextureDimension2D = 4096
+            private set
         private val mutex = Mutex()
 
         var offsetX: Float = 0f
@@ -64,6 +73,16 @@ class WebGpuRenderer {
 
         @Volatile
         private var deviceLost = false
+
+        /**
+         * Why the device was lost, plus the last uncaptured error before it. Carried in every
+         * later "device lost" message, since the log line from the loss itself is easily pruned.
+         */
+        @Volatile
+        private var deviceLostDetail = ""
+
+        @Volatile
+        private var lastUncapturedError: String? = null
 
         /**
          * Called once, on whichever thread the driver reports it from, when the device is lost.
@@ -80,7 +99,7 @@ class WebGpuRenderer {
         val unavailableReason: String?
             get() = when {
                 initError != null -> "WebGPU failed to initialize: ${initError?.message}"
-                deviceLost -> "WebGPU device lost"
+                deviceLost -> "WebGPU device lost$deviceLostDetail"
                 !::instance.isInitialized || !::adapter.isInitialized ||
                         !::device.isInitialized -> "WebGPU never initialized"
 
@@ -90,7 +109,7 @@ class WebGpuRenderer {
         fun requireAvailable() {
             check(isAvailable) {
                 "WebGPU not available" + (initError?.let { ": ${it.message}" }
-                    ?: if (deviceLost) ": device lost" else "")
+                    ?: if (deviceLost) ": device lost$deviceLostDetail" else "")
             }
         }
 
@@ -176,10 +195,17 @@ class WebGpuRenderer {
                             intArrayOf()
                         }
 
+                    val adapterLimits = adapter.getLimits()
+
                     device = adapter.requestDevice(
                         GPUDeviceDescriptor(
                             deviceLostCallback = DeviceLostCallback { lost, reason, message ->
                                 val first = !deviceLost
+                                if (first) {
+                                    deviceLostDetail = " (reason=$reason: $message" +
+                                            (lastUncapturedError?.let { "; last error: $it" }
+                                                ?: "") + ")"
+                                }
                                 deviceLost = true
                                 Log.e(
                                     "WebGpuRenderer",
@@ -189,6 +215,7 @@ class WebGpuRenderer {
                             },
                             deviceLostCallbackExecutor = Executor(Runnable::run),
                             uncapturedErrorCallback = UncapturedErrorCallback { _, type, message ->
+                                lastUncapturedError = "type=$type: $message"
                                 Log.e(
                                     "WebGpuRenderer",
                                     "Uncaptured WebGPU error type=$type: $message"
@@ -196,7 +223,15 @@ class WebGpuRenderer {
                             },
                             uncapturedErrorCallbackExecutor = Executor(Runnable::run),
                             requiredFeatures = @SuppressLint("WrongConstant") requiredFeatures,
+                            requiredLimits = GPULimits(
+                                maxTextureDimension2D = adapterLimits.maxTextureDimension2D,
+                            ),
                         )
+                    )
+                    maxTextureDimension2D = device.getLimits().maxTextureDimension2D
+                    Log.i(
+                        "WebGpuRenderer",
+                        "maxTextureDimension2D adapter=${adapterLimits.maxTextureDimension2D} device=$maxTextureDimension2D"
                     )
                 } catch (e: Throwable) {
                     // Fails soft via initError - a driver init failure shouldn't poison the whole class.
@@ -250,10 +285,10 @@ class WebGpuRenderer {
     private var configuredFormat: Int = 0
 
     /**
-     * Post-processing over the finished frame - see [FilterChain]. Empty by default, in which
+     * Post-processing over the finished frame - see [FullscreenFilterChain]. Empty by default, in which
      * case [render] hands the swapchain texture straight to its caller as it always did.
      */
-    val filters = FilterChain()
+    val filters = FullscreenFilterChain()
 
     var width: Int = 0
     var height: Int = 0
@@ -315,15 +350,18 @@ class WebGpuRenderer {
             return
         }
 
-        val initSurface = {
-            this@WebGpuRenderer.surface = pending.let {
-                instance.createSurface(
-                    GPUSurfaceDescriptor(
-                        surfaceSourceAndroidNativeWindow = GPUSurfaceSourceAndroidNativeWindow(
-                            windowFromSurface(it).also { acquired -> window = acquired }
-                        )
+        val initSurface = initSurface@{
+            // A cleanup queued first let [pending] go; a surface from it would leak.
+            if (surface != null || pendingSurface !== pending) return@initSurface
+            val created = instance.createSurface(
+                GPUSurfaceDescriptor(
+                    surfaceSourceAndroidNativeWindow = GPUSurfaceSourceAndroidNativeWindow(
+                        windowFromSurface(pending).also { acquired -> window = acquired }
                     )
-                ).apply {
+                )
+            )
+            try {
+                created.apply {
                     // Before the first latch, so the swapchain is configured knowing
                     // whether float is even available.
                     Hdr.resolve(this, adapter)
@@ -342,7 +380,16 @@ class WebGpuRenderer {
                     )
                     this@WebGpuRenderer.configuredFormat = Hdr.frameFormat
                 }
+            } catch (e: Throwable) {
+                // Unassigned, so cleanup would never free either.
+                created.close()
+                if (window != 0L) {
+                    NativeWindow.release(window)
+                    window = 0L
+                }
+                throw e
             }
+            this@WebGpuRenderer.surface = created
         }
 
         onRenderThread(initSurface)
@@ -370,14 +417,19 @@ class WebGpuRenderer {
             // An HDR image arriving, or the last one leaving, changes what the swapchain should
             // be. Here rather than at the decode: the format can only change between frames, and
             // this is the one place guaranteed to be between them - hence the latch too.
-            Hdr.latchFrameFormat()
-            if (Hdr.frameFormat != configuredFormat) {
-                reconfigure(surface)
-                Hdr.syncPresentation()
-            } else if (Hdr.consumePresentationDirty()) {
-                // Same format, but a brighter image arrived (or the brightest was freed), so the
-                // headroom asked of the display has moved.
-                Hdr.syncPresentation()
+            try {
+                Hdr.latchFrameFormat()
+                if (Hdr.frameFormat != configuredFormat) {
+                    reconfigure(surface)
+                    Hdr.syncPresentation()
+                } else if (Hdr.consumePresentationDirty()) {
+                    // Same format, but a brighter image arrived (or the brightest was freed), so
+                    // the headroom asked of the display has moved.
+                    Hdr.syncPresentation()
+                }
+            } catch (e: Exception) {
+                // Escaping would end the frame loop.
+                Log.e("WebGpuRenderer", "HDR presentation update failed", e)
             }
 
             val current = try {
@@ -396,28 +448,35 @@ class WebGpuRenderer {
                     "WebGpuRenderer",
                     "No surface texture: ${SurfaceGetCurrentTextureStatus.toString(current.status)}"
                 )
-                // Lost needs a whole new surface, which only the app can hand over.
+                // Lost needs a new surface: park until one arrives.
                 if (texture.handle != 0L) texture.close()
-                if (current.status != SurfaceGetCurrentTextureStatus.Lost) reconfigure(surface)
+                if (current.status == SurfaceGetCurrentTextureStatus.Lost) {
+                    return FrameResult.Unavailable
+                }
+                reconfigure(surface)
                 return FrameResult.Retry
             }
 
+            var encoder: GPUCommandEncoder? = null
             try {
-                device.createCommandEncoder().use { encoder ->
-                    // The command buffer retains recorded resources through submission.
-                    fn(encoder, filters.beginFrame(texture))
-                    filters.endFrame(encoder, texture)
-                    encoder.finish().use { commands ->
-                        device.queue.use { it.submit(arrayOf(commands)) }
-                    }
-                    surface.present()
-                }
+                encoder = device.createCommandEncoder()
+                // Draws into an offscreen texture when filters are enabled; endFrame runs them
+                // over it and lands the result on the swapchain.
+                fn(encoder, filters.beginFrame(texture))
+                filters.endFrame(encoder, texture)
+                device.queue.submitAndRelease(encoder)
+                encoder = null
+                surface.present()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e("WebGpuRenderer", "Render error", e)
                 // Don't rethrow - allow the app to continue rendering next frame
+            } catch (e: OutOfMemoryError) {
+                Log.e("WebGpuRenderer", "Out of memory rendering", e)
             } finally {
+                // Unsubmitted if the frame threw.
+                encoder?.close()
                 // getCurrentTexture hands out a new reference every frame - see [endAndRelease].
                 texture.close()
             }
@@ -474,7 +533,10 @@ class WebGpuRenderer {
             }
         }
 
-        if (isOnDispatcherThread) {
+        if (isOnDispatcherThread && mutex.isLocked) {
+            // The mutex holder is on this thread: blocking would deadlock.
+            CoroutineScope(dispatcher).launch { doCleanup() }
+        } else if (isOnDispatcherThread) {
             // Already on dispatcher, run synchronously
             runBlocking {
                 doCleanup()

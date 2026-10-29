@@ -1,0 +1,5 @@
+# Keep translator tables after upstream's migrations
+
+Translator releases up to v22 created their tables in SQLDelight migrations 15 to 17. Upstream later used the same numbers for its schema rework, so a v22 database (user_version 18) would have skipped upstream's migrations 15 to 17. The translator schema is now one idempotent migration (`CREATE ... IF NOT EXISTS`) numbered after upstream's last one, and `TranslatorLegacySchema` rewinds a legacy database before the driver reads its version: it adds the legacy migration 17 columns if they are missing and sets user_version 15, so every upstream migration runs and the translator migration then leaves the existing tables in place.
+
+When an upstream sync adds migrations, renumber the translator migration after them and add the previous translator release's user_version to `TranslatorLegacySchema`, mapped to the upstream version it had reached. A database is only treated as legacy when it has translator tables, which an upstream-only database never has. Translator tables reference upstream rows by ID only, without foreign keys, so upstream table rebuilds and renames do not cascade into them.

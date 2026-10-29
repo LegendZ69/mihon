@@ -1,5 +1,7 @@
 package mihon.feature.translation.overlay
 
+import android.graphics.Matrix
+
 /** Pixel mapping performed by the reader before an image reaches its view. */
 enum class PageImageTransform {
     ORIGINAL,
@@ -46,4 +48,24 @@ enum class PageImageTransform {
             LEFT_ABOVE_RIGHT -> Mapping(half, height * 2, listOf(left, right.copy(f = h)))
         }
     }
+}
+
+/**
+ * Maps raw [width] x [height] source pixels to the image a decoder shows after applying Exif
+ * [orientation]; identity for 1 or an unknown value.
+ */
+fun exifOrientationMatrix(orientation: Int, width: Int, height: Int): Matrix {
+    val w = width.toFloat()
+    val h = height.toFloat()
+    val values = when (orientation) {
+        2 -> floatArrayOf(-1f, 0f, w, 0f, 1f, 0f)
+        3 -> floatArrayOf(-1f, 0f, w, 0f, -1f, h)
+        4 -> floatArrayOf(1f, 0f, 0f, 0f, -1f, h)
+        5 -> floatArrayOf(0f, 1f, 0f, 1f, 0f, 0f)
+        6 -> floatArrayOf(0f, -1f, h, 1f, 0f, 0f)
+        7 -> floatArrayOf(0f, -1f, h, -1f, 0f, w)
+        8 -> floatArrayOf(0f, 1f, 0f, -1f, 0f, w)
+        else -> floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f)
+    }
+    return Matrix().apply { setValues(values + floatArrayOf(0f, 0f, 1f)) }
 }
