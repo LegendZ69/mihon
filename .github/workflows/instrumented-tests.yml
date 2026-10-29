@@ -17,6 +17,12 @@ env:
   TEST_PACKAGE: app.mihon.benchmark.test
   # Optional `am instrument -e class` filter; empty runs the whole suite.
   TEST_CLASS: ""
+  # Classes run with -e translation.acceptance true against the fixture server; empty skips the step.
+  ACCEPTANCE_CLASSES: >-
+    mihon.feature.translation.acceptance.MinifiedTranslationAcceptanceTest
+    mihon.feature.translation.acceptance.MinifiedTranslationQueueAcceptanceTest
+    mihon.feature.translation.acceptance.MinifiedWebGpuOwnershipAcceptanceTest
+    mihon.feature.translation.ui.TranslationStructuredImportNativeTest
 
 jobs:
   instrumented:
@@ -100,7 +106,7 @@ jobs:
       # The translation.acceptance group, as docs/translator-structured-prompts-validation-2026-09-19.md
       # runs it: synthetic fixture server on adb-reversed port 8765, benchmark app in the foreground.
       - name: Run acceptance-gated tests
-        if: always() && steps.install.outcome == 'success' && env.TEST_CLASS == ''
+        if: always() && steps.install.outcome == 'success' && env.ACCEPTANCE_CLASSES != ''
         timeout-minutes: 90
         run: |
           out="$RUNNER_TEMP/acceptance"
@@ -110,11 +116,7 @@ jobs:
           adb shell am start -W -n app.mihon.benchmark/eu.kanade.tachiyomi.ui.main.MainActivity
           adb reverse tcp:8765 tcp:8765
           status=0
-          for class in \
-            mihon.feature.translation.acceptance.MinifiedTranslationAcceptanceTest \
-            mihon.feature.translation.acceptance.MinifiedTranslationQueueAcceptanceTest \
-            mihon.feature.translation.acceptance.MinifiedWebGpuOwnershipAcceptanceTest \
-            mihon.feature.translation.ui.TranslationStructuredImportNativeTest; do
+          for class in $ACCEPTANCE_CLASSES; do
             name="${class##*.}"
             # A freshly started server and new ledger per class, as the queue acceptance requires.
             python3 -B scripts/translator_fixture_server.py --port 8765 --ledger "$out/$name-ledger.jsonl" \
