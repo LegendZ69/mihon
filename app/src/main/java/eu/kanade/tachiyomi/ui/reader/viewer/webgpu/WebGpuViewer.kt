@@ -1291,6 +1291,7 @@ open class WebGpuViewer(
         keep: () -> Unit,
     ) {
         // Translation geometry is in the file's raw pixels, so frames are shown before Exif orientation.
+        // Read it before any decode, which drops the decoder's tags.
         val orientation = dec.readerSourceOrientation()
 
         if (isDualPageMode()) {
@@ -1420,7 +1421,7 @@ open class WebGpuViewer(
             val shown = preview?.takeIf { synchronized(lock) { page.imagePage === it && !it.destroyed } }
             // Only a page the reader hasn't moved re-homes for its trim.
             val wasHome = shown?.atHome == true
-            val firstPixels = restoreReaderSourceFrame(dec, firstFrame)
+            val firstPixels = restoreReaderSourceFrame(dec, firstFrame, orientation)
             val firstImage = shown?.image?.also {
                 it.update(firstPixels.pixels)
                 if (!animated) it.createMipMaps(firstPixels.pixels)
@@ -1505,7 +1506,10 @@ open class WebGpuViewer(
                                     null
                                 }
                                 f?.let {
-                                    AnimationFrame(restoreReaderSourceFrame(dec, it).pixels, it.duration) { it.close() }
+                                    AnimationFrame(
+                                        restoreReaderSourceFrame(dec, it, orientation).pixels,
+                                        it.duration,
+                                    ) { it.close() }
                                 }
                             }
                         }

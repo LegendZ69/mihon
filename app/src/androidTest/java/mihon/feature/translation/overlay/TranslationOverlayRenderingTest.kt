@@ -405,8 +405,9 @@ class TranslationOverlayRenderingTest {
                 }
                 file.inputStream().use { input ->
                     ImageDecoder.open(input).use { native ->
+                        assertEquals("EXIF $orientation tag", orientation, native.readerSourceOrientation())
                         native.decodeNext().use { decoded ->
-                            val frame = restoreReaderSourceFrame(native, decoded)
+                            val frame = restoreReaderSourceFrame(native, decoded, orientation)
                             assertEquals("EXIF $orientation width", 128, frame.width)
                             assertEquals("EXIF $orientation height", 96, frame.height)
                             val red = (40 * frame.width + 40) * 4
@@ -439,9 +440,11 @@ class TranslationOverlayRenderingTest {
             }
             val page = file.inputStream().use { input ->
                 ImageDecoder.open(input).use { native ->
+                    // As WebGpuViewer decodes a page: orientation first, as decoding drops the tags, then
+                    // the frame and any gain map in raw source pixels.
+                    val orientation = native.readerSourceOrientation()
                     native.decodeNext().use { decoded ->
-                        // As WebGpuViewer decodes a page: the frame and any gain map in raw source pixels.
-                        val frame = restoreReaderSourceFrame(native, decoded)
+                        val frame = restoreReaderSourceFrame(native, decoded, orientation)
                         val gainmap = if (native.hdrKind == ImageDecoder.HdrKind.GAINMAP) native.getGainmap() else null
                         ImagePage.ImageSingle(
                             Image(
@@ -451,7 +454,7 @@ class TranslationOverlayRenderingTest {
                                 createMipMaps = false,
                                 hdr = native.isHdr,
                                 hdrHeadroom = gainmap?.headroomStops ?: native.hdrHeadroom,
-                                gainmap = gainmap?.let { readerSourceGainmap(it, native.readerSourceOrientation()) },
+                                gainmap = gainmap?.let { readerSourceGainmap(it, orientation) },
                             ),
                         )
                     }

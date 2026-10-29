@@ -60,7 +60,9 @@ raw-coordinate copy, as below.
 `ReaderImageDecoder.kt` adapts `ca.mpreg:imagedecoder:18` to the established raw
 source-coordinate contract in both readers. The official decoder applies
 EXIF orientation to every frame, region and gainmap, and exposes no orientation opt-out. Its `getTag("Orientation")`
-returns the original numeric EXIF value. The adapter undoes that pixel permutation
+returns the original numeric EXIF value until a frame is decoded; decoding drops the tags (`null`
+afterwards, checked on an Android 15 emulator), so each reader reads it once before its first decode and
+passes it to the restore helpers. The adapter undoes that pixel permutation
 before cropping or GPU upload, preserving all RGBA8/RGBA16F and gainmap bytes;
 normal orientation reuses the buffer without a pixel allocation. Checked buffer
 dimensions bound any required copy to the existing decoded frame size. The

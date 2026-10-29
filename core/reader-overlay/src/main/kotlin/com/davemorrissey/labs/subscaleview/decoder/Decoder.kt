@@ -57,8 +57,9 @@ class Decoder(
             ImageDecoder.open(inputStream)
         }
 
-        if (dec.readerSourceOrientation() != 1) {
-            return dec.use(::initRaw)
+        val orientation = dec.readerSourceOrientation()
+        if (orientation != 1) {
+            return dec.use { initRaw(it, orientation) }
         }
 
         imageWidth = dec.width
@@ -111,8 +112,8 @@ class Decoder(
     }
 
     /** Decodes the whole first frame once and keeps its raw-coordinate RGBA8 pixels for [decodeRegion]. */
-    private fun initRaw(dec: ImageDecoder): Point {
-        val raw = dec.decodeNext().use { frame -> restoreReaderSourceFrame(dec, frame, sdr8 = true) }
+    private fun initRaw(dec: ImageDecoder, orientation: Int): Point {
+        val raw = dec.decodeNext().use { frame -> restoreReaderSourceFrame(dec, frame, orientation, sdr8 = true) }
         imageWidth = raw.width
         imageHeight = raw.height
         cropLeft = 0
