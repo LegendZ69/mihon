@@ -20,13 +20,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import mihon.app.di.AppBindings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import tachiyomi.data.Database
+import tachiyomi.data.DatabaseBindings
 import tachiyomi.data.translation.SqlDelightTranslationArchiveRepository
 import tachiyomi.data.translation.TranslationRepositoryImpl
 import tachiyomi.domain.translation.model.GeometryCorrectionCheckpoint
@@ -715,7 +715,7 @@ class TranslationArchivePersistenceTest {
     }
 
     private class Opened(val driver: SqlDriver) {
-        val database = AppBindings.providesDatabase(driver)
+        val database = DatabaseBindings.providesDatabase(driver)
         val archive = SqlDelightTranslationArchiveRepository(database)
         val normal = TranslationRepositoryImpl(database)
     }

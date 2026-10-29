@@ -21,10 +21,12 @@ import androidx.webgpu.MapMode
 import androidx.webgpu.TextureFormat
 import androidx.webgpu.TextureUsage
 import ca.mpreg.imagedecoder.ImageDecoder
-import ca.mpreg.webgpuviewer.decodeNextReaderFrame
+import ca.mpreg.webgpuviewer.readerSourceGainmap
+import ca.mpreg.webgpuviewer.readerSourceOrientation
 import ca.mpreg.webgpuviewer.renderer.Image
 import ca.mpreg.webgpuviewer.renderer.ImageOverlay
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
+import ca.mpreg.webgpuviewer.restoreReaderSourceFrame
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import com.davemorrissey.labs.subscaleview.decoder.Decoder
 import com.davemorrissey.labs.subscaleview.provider.InputProvider
@@ -402,15 +404,17 @@ class TranslationOverlayRenderingTest {
                     decoder.recycle()
                 }
                 file.inputStream().use { input ->
-                    ImageDecoder.new(input).use { native ->
-                        val frame = native.decodeNextReaderFrame()
-                        assertEquals("EXIF $orientation width", 128, frame.width)
-                        assertEquals("EXIF $orientation height", 96, frame.height)
-                        val red = (40 * frame.width + 40) * 4
-                        assertTrue(frame.image.get(red).toInt() and 255 > 240)
-                        assertTrue(frame.image.get(red + 1).toInt() and 255 < 20)
-                        val white = (90 * frame.width + 110) * 4
-                        assertTrue(frame.image.get(white + 1).toInt() and 255 > 240)
+                    ImageDecoder.open(input).use { native ->
+                        native.decodeNext().use { decoded ->
+                            val frame = restoreReaderSourceFrame(native, decoded)
+                            assertEquals("EXIF $orientation width", 128, frame.width)
+                            assertEquals("EXIF $orientation height", 96, frame.height)
+                            val red = (40 * frame.width + 40) * 4
+                            assertTrue(frame.pixels.get(red).toInt() and 255 > 240)
+                            assertTrue(frame.pixels.get(red + 1).toInt() and 255 < 20)
+                            val white = (90 * frame.width + 110) * 4
+                            assertTrue(frame.pixels.get(white + 1).toInt() and 255 > 240)
+                        }
                     }
                 }
             }
@@ -434,19 +438,23 @@ class TranslationOverlayRenderingTest {
                 saveAttributes()
             }
             val page = file.inputStream().use { input ->
-                ImageDecoder.new(input).use { native ->
-                    val frame = native.decodeNextReaderFrame()
-                    ImagePage.ImageSingle(
-                        Image(
-                            frame.image,
-                            frame.width,
-                            frame.height,
-                            createMipMaps = false,
-                            hdr = frame.isHdr,
-                            hdrHeadroom = frame.hdrHeadroom,
-                            gainmap = frame.gainmap,
-                        ),
-                    )
+                ImageDecoder.open(input).use { native ->
+                    native.decodeNext().use { decoded ->
+                        // As WebGpuViewer decodes a page: the frame and any gain map in raw source pixels.
+                        val frame = restoreReaderSourceFrame(native, decoded)
+                        val gainmap = if (native.hdrKind == ImageDecoder.HdrKind.GAINMAP) native.getGainmap() else null
+                        ImagePage.ImageSingle(
+                            Image(
+                                frame.pixels,
+                                frame.width,
+                                frame.height,
+                                createMipMaps = false,
+                                hdr = native.isHdr,
+                                hdrHeadroom = gainmap?.headroomStops ?: native.hdrHeadroom,
+                                gainmap = gainmap?.let { readerSourceGainmap(it, native.readerSourceOrientation()) },
+                            ),
+                        )
+                    }
                 }
             }
             try {

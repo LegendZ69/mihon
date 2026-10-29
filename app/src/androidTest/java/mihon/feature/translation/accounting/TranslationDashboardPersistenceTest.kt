@@ -15,13 +15,13 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import mihon.app.di.AppBindings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import tachiyomi.data.Database
+import tachiyomi.data.DatabaseBindings
 import tachiyomi.data.translation.TranslationDashboardRepositoryImpl
 import tachiyomi.data.translation.TranslationRepositoryImpl
 import tachiyomi.domain.translation.model.OcrPageResult
@@ -494,7 +494,7 @@ class TranslationDashboardPersistenceTest {
     }
 
     private class Opened(val driver: SqlDriver) {
-        val database = AppBindings.providesDatabase(driver)
+        val database = DatabaseBindings.providesDatabase(driver)
         val repository = TranslationRepositoryImpl(database)
         val dashboard = TranslationDashboardRepositoryImpl(database)
     }

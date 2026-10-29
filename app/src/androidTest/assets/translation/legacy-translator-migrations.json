@@ -1,0 +1,38 @@
+{
+  "description": "Translator migrations 15-17 as shipped through translator-v22, inside upstream's migration numbering. A database that applied them reports user_version 16 to 18 on the upstream version 15 schema.",
+  "sourceCommit": "9248d83250d976c2419e683d4711ece77d5c4d77",
+  "migrations": {
+    "15": [
+      "CREATE TABLE translation_jobs (\n    id TEXT NOT NULL PRIMARY KEY,\n    manga_id INTEGER NOT NULL,\n    chapter_id INTEGER NOT NULL,\n    priority INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    payload TEXT NOT NULL\n)",
+      "CREATE INDEX translation_jobs_chapter ON translation_jobs(chapter_id)",
+      "CREATE TABLE translation_images (\n    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,\n    image_id TEXT NOT NULL,\n    image_index INTEGER NOT NULL,\n    payload TEXT NOT NULL,\n    PRIMARY KEY (job_id, image_id)\n)",
+      "CREATE TABLE translation_results (\n    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,\n    image_id TEXT NOT NULL,\n    committed_at INTEGER NOT NULL,\n    payload TEXT NOT NULL,\n    PRIMARY KEY (job_id, image_id)\n)",
+      "CREATE TABLE translation_batches (\n    id TEXT NOT NULL PRIMARY KEY,\n    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,\n    payload TEXT NOT NULL\n)",
+      "CREATE TABLE translation_events (\n    id TEXT NOT NULL PRIMARY KEY,\n    job_id TEXT NOT NULL,\n    time INTEGER NOT NULL,\n    payload TEXT NOT NULL\n)",
+      "CREATE INDEX translation_events_job_time ON translation_events(job_id, time)"
+    ],
+    "16": [
+      "CREATE TABLE translation_reviews (\n    id TEXT NOT NULL PRIMARY KEY,\n    job_id TEXT NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,\n    image_id TEXT NOT NULL,\n    updated_at INTEGER NOT NULL,\n    payload TEXT NOT NULL\n)",
+      "CREATE INDEX translation_reviews_page ON translation_reviews(job_id, image_id)"
+    ],
+    "17": [
+      "CREATE TABLE translation_operations (\n    id TEXT NOT NULL PRIMARY KEY,\n    job_id TEXT NOT NULL,\n    parent_id TEXT,\n    batch_id TEXT,\n    image_id TEXT,\n    stage TEXT NOT NULL,\n    state TEXT NOT NULL,\n    updated_at INTEGER NOT NULL,\n    payload TEXT NOT NULL\n)",
+      "CREATE INDEX translation_operations_job ON translation_operations(job_id, updated_at DESC)",
+      "CREATE INDEX translation_operations_parent ON translation_operations(parent_id, updated_at)",
+      "CREATE INDEX translation_operations_image ON translation_operations(job_id, image_id)",
+      "CREATE TABLE translation_usage (\n    id TEXT NOT NULL PRIMARY KEY,\n    job_id TEXT NOT NULL,\n    time INTEGER NOT NULL,\n    provider TEXT NOT NULL,\n    model TEXT NOT NULL,\n    payload TEXT NOT NULL\n)",
+      "CREATE INDEX translation_usage_time ON translation_usage(time DESC)",
+      "CREATE INDEX translation_usage_job ON translation_usage(job_id, time DESC)",
+      "CREATE TABLE translation_billing (\n    id TEXT NOT NULL PRIMARY KEY,\n    connection_id TEXT NOT NULL,\n    period_start INTEGER NOT NULL,\n    period_end INTEGER NOT NULL,\n    synced_at INTEGER NOT NULL,\n    payload TEXT NOT NULL\n)",
+      "CREATE INDEX translation_billing_connection ON translation_billing(connection_id, period_start)",
+      "ALTER TABLE translation_events ADD COLUMN operation_id TEXT",
+      "ALTER TABLE translation_events ADD COLUMN batch_id TEXT",
+      "ALTER TABLE translation_events ADD COLUMN image_id TEXT",
+      "ALTER TABLE translation_events ADD COLUMN stage TEXT NOT NULL DEFAULT 'legacy'",
+      "ALTER TABLE translation_events ADD COLUMN level TEXT NOT NULL DEFAULT 'INFO'",
+      "CREATE INDEX translation_events_operation ON translation_events(operation_id, time DESC)",
+      "CREATE INDEX translation_events_batch ON translation_events(job_id, batch_id, time DESC)",
+      "CREATE INDEX translation_events_image ON translation_events(job_id, image_id, time DESC)"
+    ]
+  }
+}

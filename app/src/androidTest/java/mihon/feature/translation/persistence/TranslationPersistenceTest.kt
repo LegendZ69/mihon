@@ -1,6 +1,7 @@
 package mihon.feature.translation.persistence
 
 import android.content.Context
+import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -21,12 +22,14 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import mihon.app.di.AppBindings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import tachiyomi.data.Database
+import tachiyomi.data.DatabaseBindings
+import tachiyomi.data.MihonSqliteConnectionFactory
+import tachiyomi.data.TranslatorLegacySchema
 import tachiyomi.data.translation.TranslationDeletionRepositoryImpl
 import tachiyomi.data.translation.TranslationRepositoryImpl
 import tachiyomi.domain.translation.model.GeometryCorrectionAttempt
@@ -508,24 +511,16 @@ class TranslationPersistenceTest {
 
     @Test
     fun migrationFromVersion15KeepsExistingLibraryDataAndCreatesDurableTranslationTables() = databaseTest { fixture ->
-        val assets = InstrumentationRegistry.getInstrumentation().context.assets
-        val legacy = assets.open("translation/legacy-v15-schema.json").bufferedReader().use {
-            json.parseToJsonElement(it.readText()).jsonObject
-        }
-        assertEquals("15", legacy.getValue("schemaVersion").jsonPrimitive.content)
+        createLegacyDatabase(fixture.file, translatorMigrations = 0)
         BundledSQLiteDriver().open(fixture.file.absolutePath).use { connection ->
-            for (statement in legacy.getValue("statements").jsonArray) {
-                connection.prepare(statement.jsonPrimitive.content).use { it.step() }
-            }
             connection.prepare(
                 "INSERT INTO categories (_id, name, sort, flags) VALUES (42, 'Existing library category', 3, 9)",
             ).use {
                 it.step()
             }
-            connection.prepare("PRAGMA user_version = 15").use { it.step() }
         }
         val migrated = fixture.open()
-        assertEquals("Existing library category", migrated.database.categoriesQueries.getCategory(42).awaitAsOne().name)
+        assertEquals("Existing library category", migrated.database.categoryQueries.getCategory(42).awaitAsOne().name)
         assertTrue(migrated.repository.jobs().isEmpty())
         val queued = job("after-migration")
         migrated.repository.saveJob(queued)
@@ -540,18 +535,13 @@ class TranslationPersistenceTest {
         assertEquals("Migrated", reopened.repository.results(queued.id).single().regions.single().translatedText)
         assertEquals(1, reopened.repository.batches(queued.id).size)
         assertEquals(listOf(event), withTimeout(10000) { reopened.repository.observeEvents(queued.id).first() })
-        assertEquals(9L, reopened.database.categoriesQueries.getCategory(42).awaitAsOne().flags)
+        assertEquals(9L, reopened.database.categoryQueries.getCategory(42).awaitAsOne().flags)
         fixture.close()
-        BundledSQLiteDriver().open(fixture.file.absolutePath).use { connection ->
-            connection.prepare("PRAGMA user_version").use { statement ->
-                assertTrue(statement.step())
-                assertEquals(Database.Schema.version, statement.getLong(0))
-            }
-        }
+        assertEquals(Database.Schema.version, userVersion(fixture.file))
     }
 
     @Test
-    fun currentVersion16UpgradeKeepsOldQueueDisabledAndCachedResultsUntouched() = databaseTest { fixture ->
+    fun legacyTranslatorVersion16UpgradeKeepsOldQueueDisabledAndCachedResultsUntouched() = databaseTest { fixture ->
         val opened = fixture.open()
         val oldJob = job("old-queue")
         val full = json.parseToJsonElement(json.encodeToString(oldJob)).jsonObject
@@ -567,15 +557,120 @@ class TranslationPersistenceTest {
         )
         opened.repository.saveResult(oldJob.id, page("page", "Existing translation"))
         val before = opened.repository.results(oldJob.id).single()
+        val event = TranslationEvent("old-event", oldJob.id, time = 100, stage = "QUEUE", message = "Queued")
+        opened.repository.addEvent(event)
         fixture.close()
-        BundledSQLiteDriver().open(fixture.file.absolutePath).use { connection ->
-            connection.prepare("DROP TABLE translation_reviews").use { it.step() }
-            connection.prepare("PRAGMA user_version = 16").use { it.step() }
-        }
+        // Translator migration 15 only, as an early translator build left it: no reviews or event columns yet.
+        replaceWithLegacyDatabase(fixture, translatorMigrations = 1)
+        assertEquals(16L, userVersion(fixture.file))
+
         val migrated = fixture.open().repository
         assertTrue(!migrated.jobs().single().settings.qualityReview.enabled)
         assertEquals(before, migrated.results(oldJob.id).single())
         assertTrue(migrated.reviews(oldJob.id).isEmpty())
+        // The legacy row predates the event columns, so it reads back with their defaults.
+        assertEquals(event.message, withTimeout(10000) { migrated.observeEvents(oldJob.id).first() }.single().message)
+        fixture.close()
+        assertEquals(Database.Schema.version, userVersion(fixture.file))
+    }
+
+    @Test
+    fun translatorV22DatabaseRunsUpstreamMigrationsAndKeepsEveryTranslatorRow() = databaseTest { fixture ->
+        val opened = fixture.open()
+        val job = job("v22-job")
+        opened.repository.saveJob(job)
+        opened.repository.saveImages(job.id, listOf(image("page", 0)))
+        opened.repository.saveResult(job.id, page("page", "Kept"))
+        opened.repository.saveBatch(TranslationBatch("v22-batch", job.id, imageIds = listOf("page")))
+        val event = TranslationEvent("v22-event", job.id, time = 100, stage = "QUEUE", message = "Queued")
+        opened.repository.addEvent(event)
+        val before = opened.repository.results(job.id).single()
+        fixture.close()
+        // Translator migrations 15 to 17, as every release up to translator-v22 left the database.
+        replaceWithLegacyDatabase(fixture, translatorMigrations = 3) { connection ->
+            connection.prepare(
+                "INSERT INTO categories (_id, name, sort, flags) VALUES (42, 'Existing library category', 3, 9)",
+            ).use { it.step() }
+        }
+        assertEquals(18L, userVersion(fixture.file))
+
+        val migrated = fixture.open()
+        assertEquals("Existing library category", migrated.database.categoryQueries.getCategory(42).awaitAsOne().name)
+        assertEquals(listOf(job), migrated.repository.jobs())
+        assertEquals(1, migrated.repository.images(job.id).size)
+        assertEquals(before, migrated.repository.results(job.id).single())
+        assertEquals(1, migrated.repository.batches(job.id).size)
+        assertEquals(listOf(event), withTimeout(10000) { migrated.repository.observeEvents(job.id).first() })
+        fixture.close()
+        assertEquals(Database.Schema.version, userVersion(fixture.file))
+    }
+
+    /** The upstream version 15 schema, then the first [translatorMigrations] legacy translator migrations. */
+    private fun createLegacyDatabase(
+        file: File,
+        translatorMigrations: Int,
+        populate: (SQLiteConnection) -> Unit = {},
+    ) {
+        val assets = InstrumentationRegistry.getInstrumentation().context.assets
+        val upstream = assets.open("translation/legacy-v15-schema.json").bufferedReader().use {
+            json.parseToJsonElement(it.readText()).jsonObject
+        }
+        assertEquals("15", upstream.getValue("schemaVersion").jsonPrimitive.content)
+        val translator = assets.open("translation/legacy-translator-migrations.json").bufferedReader().use {
+            json.parseToJsonElement(it.readText()).jsonObject.getValue("migrations").jsonObject
+        }
+        BundledSQLiteDriver().open(file.absolutePath).use { connection ->
+            val statements = upstream.getValue("statements").jsonArray +
+                (15 until 15 + translatorMigrations).flatMap { translator.getValue(it.toString()).jsonArray }
+            for (statement in statements) {
+                connection.prepare(statement.jsonPrimitive.content).use { it.step() }
+            }
+            populate(connection)
+            connection.prepare("PRAGMA user_version = ${15 + translatorMigrations}").use { it.step() }
+        }
+    }
+
+    /**
+     * Rebuilds [fixture]'s database as a legacy one holding the translator rows it had, so the rows keep the
+     * encoding the repository writes today.
+     */
+    private fun replaceWithLegacyDatabase(
+        fixture: Fixture,
+        translatorMigrations: Int,
+        populate: (SQLiteConnection) -> Unit = {},
+    ) {
+        val current = File(fixture.directory, "current.db")
+        BundledSQLiteDriver().open(fixture.file.absolutePath).use { connection ->
+            connection.prepare("VACUUM INTO '${current.absolutePath}'").use { it.step() }
+        }
+        listOf("", "-wal", "-shm").forEach { File(fixture.file.path + it).delete() }
+        createLegacyDatabase(fixture.file, translatorMigrations) { connection ->
+            populate(connection)
+            connection.prepare("ATTACH DATABASE '${current.absolutePath}' AS source").use { it.step() }
+            val events = if (translatorMigrations >= 3) {
+                "id, job_id, time, payload, operation_id, batch_id, image_id, stage, level"
+            } else {
+                "id, job_id, time, payload"
+            }
+            listOf(
+                "translation_jobs" to "id, manga_id, chapter_id, priority, updated_at, payload",
+                "translation_images" to "job_id, image_id, image_index, payload",
+                "translation_results" to "job_id, image_id, committed_at, payload",
+                "translation_batches" to "id, job_id, payload",
+                "translation_events" to events,
+            ).forEach { (table, columns) ->
+                connection.prepare("INSERT INTO $table ($columns) SELECT $columns FROM source.$table").use { it.step() }
+            }
+            connection.prepare("DETACH DATABASE source").use { it.step() }
+        }
+        current.delete()
+    }
+
+    private fun userVersion(file: File): Long = BundledSQLiteDriver().open(file.absolutePath).use { connection ->
+        connection.prepare("PRAGMA user_version").use { statement ->
+            assertTrue(statement.step())
+            statement.getLong(0)
+        }
     }
 
     @Test
@@ -767,7 +862,8 @@ class TranslationPersistenceTest {
 
         fun open(): OpenDatabase = opened ?: OpenDatabase(
             AndroidxSqliteDriver(
-                driver = BundledSQLiteDriver(),
+                // As the app opens it, so a legacy translator database is normalized first.
+                connectionFactory = MihonSqliteConnectionFactory(prepare = TranslatorLegacySchema::normalize),
                 databaseType = AndroidxSqliteDatabaseType.File(file.absolutePath),
                 schema = Database.Schema,
                 configuration = AndroidxSqliteConfiguration(isForeignKeyConstraintsEnabled = true),
@@ -786,7 +882,7 @@ class TranslationPersistenceTest {
     }
 
     private class OpenDatabase(val driver: SqlDriver) {
-        val database = AppBindings.providesDatabase(driver)
+        val database = DatabaseBindings.providesDatabase(driver)
         val repository = TranslationRepositoryImpl(database)
     }
 }
