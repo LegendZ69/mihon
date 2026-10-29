@@ -75,6 +75,7 @@ jobs:
           "$adb" shell getprop ro.build.fingerprint
 
       - name: Install APKs
+        id: install
         run: |
           app=$(find app/build -name 'app-x86_64-benchmark.apk' -path '*benchmark*' | head -1)
           tests=$(find app/build -name 'app-benchmark-androidTest.apk' | head -1)
@@ -96,6 +97,39 @@ jobs:
           cat "$RUNNER_TEMP/summary.md"
           exit "$status"
 
+      # The translation.acceptance group, as docs/translator-structured-prompts-validation-2026-09-19.md
+      # runs it: synthetic fixture server on adb-reversed port 8765, benchmark app in the foreground.
+      - name: Run acceptance-gated tests
+        if: always() && steps.install.outcome == 'success' && env.TEST_CLASS == ''
+        timeout-minutes: 90
+        run: |
+          out="$RUNNER_TEMP/acceptance"
+          mkdir -p "$out"
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
+          adb shell am start -W -n app.mihon.benchmark/eu.kanade.tachiyomi.ui.main.MainActivity
+          adb reverse tcp:8765 tcp:8765
+          status=0
+          for class in \
+            mihon.feature.translation.acceptance.MinifiedTranslationAcceptanceTest \
+            mihon.feature.translation.acceptance.MinifiedTranslationQueueAcceptanceTest \
+            mihon.feature.translation.acceptance.MinifiedWebGpuOwnershipAcceptanceTest \
+            mihon.feature.translation.ui.TranslationStructuredImportNativeTest; do
+            name="${class##*.}"
+            # A freshly started server and new ledger per class, as the queue acceptance requires.
+            python3 -B scripts/translator_fixture_server.py --port 8765 --ledger "$out/$name-ledger.jsonl" \
+              > "$out/$name-server.log" 2>&1 &
+            server=$!
+            timeout 30 bash -c "until grep -q '\"fixture\": true' '$out/$name-server.log'; do sleep 0.5; done"
+            adb shell am instrument -w -r -e translation.acceptance true -e class "$class" \
+              "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" > "$out/$name.txt"
+            kill "$server"
+            wait "$server" || true
+            python3 -I scripts/instrumentation_summary.py "$out/$name.txt" > "$out/$name.md" || status=1
+            { echo "## $name"; tail -n +2 "$out/$name.md"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$status"
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -104,5 +138,6 @@ jobs:
           path: |
             ${{ runner.temp }}/instrument.txt
             ${{ runner.temp }}/summary.md
+            ${{ runner.temp }}/acceptance
             ${{ runner.temp }}/logcat.txt
             ${{ runner.temp }}/emulator.log
