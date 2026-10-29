@@ -82,4 +82,6 @@ permutations, and native decode → GPU overlay readback. `getTag` describes the
 main image; per-frame differing orientations in multipage TIFF are not covered
 by these static-image checks. The decoder 18 adaptation was checked against the
 [v18 Kotlin source artifact](https://repo.maven.apache.org/maven2/ca/mpreg/imagedecoder/18/imagedecoder-18-sources.jar)
-on 2026-10-29; its device regressions have not been rerun.
+on 2026-10-29. Its regressions in `TranslationOverlayRenderingTest`, including the real-GPU Exif
+decode, were rerun the same day on an Android 15 x86_64 emulator with SwiftShader rendering, not on
+a handset.
