@@ -1,0 +1,108 @@
+name: Instrumented tests
+on:
+  push:
+    branches:
+      - claude/emulator-run
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SYSTEM_IMAGE: 'system-images;android-35;google_apis;x86_64'
+  TEST_PACKAGE: app.mihon.benchmark.test
+  # Optional `am instrument -e class` filter; empty runs the whole suite.
+  TEST_CLASS: ""
+
+jobs:
+  instrumented:
+    name: Run instrumented tests on an emulator
+    runs-on: 'ubuntu-26.04'
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+
+      - name: Build benchmark app and instrumented tests
+        run: >
+          ./gradlew :app:assembleBenchmark :app:assembleBenchmarkAndroidTest
+          -PtranslatorReleaseNumber=23
+          -Ptranslation.testBuildType=benchmark
+          -Pandroid.injected.build.abi=x86_64
+          -Pandroid.injected.testOnly=false
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Start emulator
+        run: |
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
+          # The runner image keeps AVDs outside ~/.android; pin one directory for avdmanager and the emulator.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          yes | "$sdk/sdkmanager" --install emulator platform-tools "$SYSTEM_IMAGE" > /dev/null
+          echo no | "$sdk/avdmanager" create avd -n test -k "$SYSTEM_IMAGE" -d pixel_6
+          printf 'hw.ramSize=4096\nhw.cpu.ncore=4\ndisk.dataPartition.size=8G\n' >> "$ANDROID_AVD_HOME/test.avd/config.ini"
+          nohup "$ANDROID_HOME/emulator/emulator" -avd test -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -camera-back none -camera-front none > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" wait-for-device
+          timeout 900 bash -c "until [ \"\$($adb shell getprop sys.boot_completed | tr -d '\r')\" = 1 ]; do sleep 5; done"
+          for scale in window_animation_scale transition_animation_scale animator_duration_scale; do
+            "$adb" shell settings put global "$scale" 0
+          done
+          "$adb" shell getprop ro.build.fingerprint
+
+      - name: Install APKs
+        run: |
+          app=$(find app/build -name 'app-x86_64-benchmark.apk' -path '*benchmark*' | head -1)
+          tests=$(find app/build -name 'app-benchmark-androidTest.apk' | head -1)
+          echo "app=$app tests=$tests"
+          adb install -r -g "$app"
+          adb install -r "$tests"
+
+      - name: Run instrumented tests
+        timeout-minutes: 120
+        run: |
+          adb logcat -c
+          adb logcat -v threadtime > "$RUNNER_TEMP/logcat.txt" 2>&1 &
+          filter=()
+          if [ -n "$TEST_CLASS" ]; then filter=(-e class "$TEST_CLASS"); fi
+          adb shell am instrument -w -r "${filter[@]}" "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" > "$RUNNER_TEMP/instrument.txt"
+          status=0
+          python3 -I scripts/instrumentation_summary.py "$RUNNER_TEMP/instrument.txt" > "$RUNNER_TEMP/summary.md" || status=$?
+          cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/summary.md"
+          exit "$status"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: instrumented-tests-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/instrument.txt
+            ${{ runner.temp }}/summary.md
+            ${{ runner.temp }}/logcat.txt
+            ${{ runner.temp }}/emulator.log
