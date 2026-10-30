@@ -1,0 +1,167 @@
+name: Instrumented tests
+
+# Run manually from Actions > Instrumented tests > Run workflow. Builds the minified benchmark app
+# and its instrumented tests, boots an x86_64 emulator with KVM, runs the suite with am instrument
+# and then, optionally, the translation.acceptance classes against the synthetic fixture server.
+# The raw output, summaries and logcat are uploaded as an artifact.
+#
+# On hosted runners TranslationNativeGestureTest#nativeThresholdAndCompletedActionsMirrorInRtl
+# rejects its own swipe: injecting it takes longer than the 400 ms long-press timeout.
+on:
+  workflow_dispatch:
+    inputs:
+      test_class:
+        description: 'am instrument -e class filter (Class, Class#method, comma-separated); empty runs the whole suite'
+        required: false
+        default: ''
+        type: string
+      acceptance:
+        description: 'Also run the translation.acceptance classes against the fixture server'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SYSTEM_IMAGE: 'system-images;android-35;google_apis;x86_64'
+  TEST_PACKAGE: app.mihon.benchmark.test
+  # MinifiedTranslationAcceptanceTest is left out: it needs the official Tiny OCR model pack already
+  # installed and blocks downloads.
+  ACCEPTANCE_CLASSES: >-
+    mihon.feature.translation.acceptance.MinifiedTranslationQueueAcceptanceTest
+    mihon.feature.translation.acceptance.MinifiedWebGpuOwnershipAcceptanceTest
+    mihon.feature.translation.ui.TranslationStructuredImportNativeTest
+
+jobs:
+  instrumented:
+    name: Run instrumented tests on an emulator
+    runs-on: 'ubuntu-26.04'
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+
+      - name: Build benchmark app and instrumented tests
+        run: >
+          ./gradlew :app:assembleBenchmark :app:assembleBenchmarkAndroidTest
+          -Ptranslation.testBuildType=benchmark
+          -Pandroid.injected.build.abi=x86_64
+          -Pandroid.injected.testOnly=false
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Start emulator
+        run: |
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
+          # The runner image keeps AVDs outside ~/.android; pin one directory for avdmanager and the emulator.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          yes | "$sdk/sdkmanager" --install emulator platform-tools "$SYSTEM_IMAGE" > /dev/null
+          echo no | "$sdk/avdmanager" create avd -n test -k "$SYSTEM_IMAGE" -d pixel_6
+          printf 'hw.ramSize=4096\nhw.cpu.ncore=4\ndisk.dataPartition.size=8G\n' >> "$ANDROID_AVD_HOME/test.avd/config.ini"
+          nohup "$ANDROID_HOME/emulator/emulator" -avd test -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -camera-back none -camera-front none > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" wait-for-device
+          timeout 900 bash -c "until [ \"\$($adb shell getprop sys.boot_completed | tr -d '\r')\" = 1 ]; do sleep 5; done"
+          for scale in window_animation_scale transition_animation_scale animator_duration_scale; do
+            "$adb" shell settings put global "$scale" 0
+          done
+          "$adb" shell getprop ro.build.fingerprint
+
+      - name: Install APKs
+        id: install
+        run: |
+          app=$(find app/build -name 'app-x86_64-benchmark.apk' | head -1)
+          tests=$(find app/build -name 'app-benchmark-androidTest.apk' | head -1)
+          echo "app=$app tests=$tests"
+          adb install -r -g "$app"
+          adb install -r "$tests"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+
+      - name: Run instrumented tests
+        timeout-minutes: 120
+        env:
+          TEST_CLASS: ${{ inputs.test_class }}
+        run: |
+          adb logcat -c
+          adb logcat -v threadtime > "$RUNNER_TEMP/logcat.txt" 2>&1 &
+          filter=()
+          if [ -n "$TEST_CLASS" ]; then filter=(-e class "$TEST_CLASS"); fi
+          adb shell am instrument -w -r "${filter[@]}" "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" > "$RUNNER_TEMP/instrument.txt"
+          status=0
+          python3 -I scripts/instrumentation_summary.py "$RUNNER_TEMP/instrument.txt" > "$RUNNER_TEMP/summary.md" || status=$?
+          cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/summary.md"
+          exit "$status"
+
+      # As docs/translator-structured-prompts-validation-2026-09-19.md runs them: the benchmark app in
+      # the foreground and the synthetic fixture server, which never forwards to a provider, on
+      # adb-reversed port 8765.
+      - name: Run acceptance-gated tests
+        if: always() && steps.install.outcome == 'success' && inputs.acceptance
+        timeout-minutes: 90
+        env:
+          APP_APK: ${{ steps.install.outputs.app }}
+        run: |
+          out="$RUNNER_TEMP/acceptance"
+          mkdir -p "$out"
+          # A fresh install: a test that stops partway through can leave app state behind.
+          adb uninstall app.mihon.benchmark
+          adb install -r -g "$APP_APK"
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
+          adb shell am start -W -n app.mihon.benchmark/eu.kanade.tachiyomi.ui.main.MainActivity
+          adb reverse tcp:8765 tcp:8765
+          status=0
+          for class in $ACCEPTANCE_CLASSES; do
+            name="${class##*.}"
+            # A freshly started server and new ledger per class, as the queue acceptance requires.
+            python3 -B scripts/translator_fixture_server.py --port 8765 --ledger "$out/$name-ledger.jsonl" \
+              > "$out/$name-server.log" 2>&1 &
+            server=$!
+            timeout 30 bash -c "until grep -q '\"fixture\": true' '$out/$name-server.log'; do sleep 0.5; done"
+            adb shell am instrument -w -r -e translation.acceptance true -e class "$class" \
+              "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" > "$out/$name.txt"
+            kill "$server"
+            wait "$server" || true
+            python3 -I scripts/instrumentation_summary.py "$out/$name.txt" > "$out/$name.md" || status=1
+            { echo "## $name"; tail -n +2 "$out/$name.md"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$status"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: instrumented-tests-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/instrument.txt
+            ${{ runner.temp }}/summary.md
+            ${{ runner.temp }}/acceptance
+            ${{ runner.temp }}/logcat.txt
+            ${{ runner.temp }}/emulator.log
