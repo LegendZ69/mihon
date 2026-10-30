@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import mihon.app.di.AppBindings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -21,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import tachiyomi.data.Database
+import tachiyomi.data.DatabaseBindings
 import tachiyomi.data.translation.TranslationDeletionRepositoryImpl
 import tachiyomi.data.translation.TranslationRepositoryImpl
 import tachiyomi.domain.translation.model.OcrPageResult
@@ -265,7 +265,7 @@ class TranslationDeletionPersistenceTest {
     }
 
     private class Opened(val driver: SqlDriver) {
-        val database = AppBindings.providesDatabase(driver)
+        val database = DatabaseBindings.providesDatabase(driver)
         val normal = TranslationRepositoryImpl(database)
         val deletion = TranslationDeletionRepositoryImpl(database)
     }

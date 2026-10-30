@@ -61,18 +61,23 @@ fun restoreReaderSourcePixels(
     return ReaderPixelBuffer(restored, sourceWidth, sourceHeight)
 }
 
-/** The Exif orientation the decoder applies to everything it hands out; 1 when absent or invalid. */
+/**
+ * The Exif orientation the decoder applies to everything it hands out; 1 when absent or invalid.
+ * Decoding a frame drops the decoder's tags, so read this before the first decode.
+ */
 fun ImageDecoder.readerSourceOrientation(): Int =
     getTag("Orientation")?.trim()?.toIntOrNull()?.takeIf { it in 1..8 } ?: 1
 
 /**
- * [frame]'s pixels in raw source coordinates. An unoriented frame's buffer is shared and valid only
- * until the frame closes; an oriented one is copied. [sdr8] clamps half-float HDR output to the RGBA8
- * the classic reader's tiles use, which always copies.
+ * [frame]'s pixels in raw source coordinates, given the [orientation] read before decoding. An
+ * unoriented frame's buffer is shared and valid only until the frame closes; an oriented one is
+ * copied. [sdr8] clamps half-float HDR output to the RGBA8 the classic reader's tiles use, which
+ * always copies.
  */
 fun restoreReaderSourceFrame(
     decoder: ImageDecoder,
     frame: ImageDecoder.Frame,
+    orientation: Int,
     sdr8: Boolean = false,
 ): ReaderPixelBuffer {
     val bytesPerPixel = if (decoder.isHdr) 8 else 4
@@ -81,7 +86,7 @@ fun restoreReaderSourceFrame(
         frame.width,
         frame.height,
         bytesPerPixel,
-        decoder.readerSourceOrientation(),
+        orientation,
     )
     if (!sdr8 || !decoder.isHdr) return restored
     val halves = restored.pixels.duplicate().order(ByteOrder.nativeOrder())

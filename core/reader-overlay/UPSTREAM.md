@@ -60,7 +60,9 @@ raw-coordinate copy, as below.
 `ReaderImageDecoder.kt` adapts `ca.mpreg:imagedecoder:18` to the established raw
 source-coordinate contract in both readers. The official decoder applies
 EXIF orientation to every frame, region and gainmap, and exposes no orientation opt-out. Its `getTag("Orientation")`
-returns the original numeric EXIF value. The adapter undoes that pixel permutation
+returns the original numeric EXIF value until a frame is decoded; decoding drops the tags (`null`
+afterwards, checked on an Android 15 emulator), so each reader reads it once before its first decode and
+passes it to the restore helpers. The adapter undoes that pixel permutation
 before cropping or GPU upload, preserving all RGBA8/RGBA16F and gainmap bytes;
 normal orientation reuses the buffer without a pixel allocation. Checked buffer
 dimensions bound any required copy to the existing decoded frame size. The
@@ -80,4 +82,6 @@ permutations, and native decode → GPU overlay readback. `getTag` describes the
 main image; per-frame differing orientations in multipage TIFF are not covered
 by these static-image checks. The decoder 18 adaptation was checked against the
 [v18 Kotlin source artifact](https://repo.maven.apache.org/maven2/ca/mpreg/imagedecoder/18/imagedecoder-18-sources.jar)
-on 2026-10-29; its device regressions have not been rerun.
+on 2026-10-29. Its regressions in `TranslationOverlayRenderingTest`, including the real-GPU Exif
+decode, were rerun the same day on an Android 15 x86_64 emulator with SwiftShader rendering, not on
+a handset.

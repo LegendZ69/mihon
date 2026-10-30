@@ -29,7 +29,6 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
-import mihon.app.di.AppBindings
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
@@ -42,6 +41,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import tachiyomi.data.Database
+import tachiyomi.data.DatabaseBindings
 import tachiyomi.data.translation.TranslationRepositoryImpl
 import tachiyomi.domain.translation.model.GeometryCorrectionAttemptState
 import tachiyomi.domain.translation.model.GeometryCorrectionCheckpoint
@@ -422,7 +422,7 @@ class GeometryRecoveryPipelineTest {
                 configuration = AndroidxSqliteConfiguration(isForeignKeyConstraintsEnabled = true),
             )
             driver = opened
-            repository = TranslationRepositoryImpl(AppBindings.providesDatabase(opened))
+            repository = TranslationRepositoryImpl(DatabaseBindings.providesDatabase(opened))
             gateway = TranslationProviderGateway(
                 { CredentialParser.apiKey("synthetic-only", "Fixture", "synthetic-fixture") },
                 repository,

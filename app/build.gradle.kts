@@ -262,6 +262,8 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.4.2")
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation("androidx.test:runner:1.7.0")
+    // Test fixtures open and inspect databases directly; the app reaches SQLite only through :data.
+    androidTestImplementation(libs.androidx.sqlite.bundled)
     implementation(projects.coreMetadata)
     implementation(projects.sourceApi)
     implementation(projects.sourceLocal)
